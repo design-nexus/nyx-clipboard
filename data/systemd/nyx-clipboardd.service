@@ -1,0 +1,18 @@
+[Unit]
+Description=Nyx Clipboard service (clipboard history and verification codes)
+Documentation=https://github.com/design-nexus/nyx-clipboard
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=dbus
+BusName=io.github.design_nexus.nyx.Clipboard1
+ExecStart=%h/.local/bin/nyx-clipboardd
+Restart=on-failure
+RestartSec=2
+UMask=0077
+# Verification codes are held in locked memory.
+LimitMEMLOCK=8M
+
+[Install]
+WantedBy=graphical-session.target

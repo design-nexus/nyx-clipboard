@@ -1,0 +1,272 @@
+/* Nyx Clipboard. Colours are the shared @theme_* tokens; radii follow STYLE.md
+ * (7 / 11 / 15). One solid card, no glass. */
+
+window.nyx-clipboard {
+  /* Not quite transparent: some compositors pass clicks through fully clear pixels. */
+  background: rgba(0, 0, 0, 0.004);
+}
+
+window.nyx-clipboard .cb-card {
+  background: @theme_popover;
+  border: 1px solid @theme_border;
+  border-radius: 15px;
+  padding: 10px 8px 6px;
+  box-shadow: 0 12px 40px alpha(@theme_shadow, 0.45);
+  color: @theme_text;
+  margin: 12px;
+}
+
+/* ---------- Head ---------- */
+
+window.nyx-clipboard .cb-head {
+  padding: 0 4px 8px;
+}
+
+window.nyx-clipboard entry.cb-search,
+window.nyx-clipboard .cb-search {
+  min-height: 32px;
+  border-radius: 7px;
+  background: @field;
+  border: 1px solid transparent;
+  box-shadow: none;
+}
+
+window.nyx-clipboard .cb-search:focus-within {
+  border-color: alpha(@theme_accent, 0.6);
+}
+
+window.nyx-clipboard .cb-segmented {
+  padding: 2px;
+  border-radius: 7px;
+  background: @field;
+}
+
+window.nyx-clipboard .cb-segmented button {
+  min-height: 26px;
+  min-width: 34px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: none;
+  box-shadow: none;
+  color: @theme_dim_text;
+}
+
+window.nyx-clipboard .cb-segmented button:checked {
+  background: @theme_raised;
+  color: @theme_text;
+  box-shadow: 0 1px 3px alpha(black, 0.25);
+}
+
+window.nyx-clipboard button.cb-icon-button {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 7px;
+  background: none;
+  box-shadow: none;
+  color: @theme_dim_text;
+  transition: background 120ms ease-out, color 120ms ease-out;
+}
+
+window.nyx-clipboard button.cb-icon-button:hover {
+  background: @row_hover;
+  color: @theme_text;
+}
+
+window.nyx-clipboard button.cb-icon-button:checked {
+  background: alpha(@theme_accent, 0.16);
+  color: @theme_accent;
+}
+
+window.nyx-clipboard .cb-banner {
+  margin: 0 4px 8px;
+  padding: 8px 10px;
+  border-radius: 11px;
+  background: alpha(@theme_accent, 0.10);
+  border: 1px solid alpha(@theme_accent, 0.40);
+  font-size: 12.5px;
+}
+
+window.nyx-clipboard .cb-banner.danger {
+  background: alpha(@theme_danger, 0.10);
+  border-color: alpha(@theme_danger, 0.40);
+}
+
+/* ---------- List ---------- */
+
+window.nyx-clipboard scrolledwindow,
+window.nyx-clipboard .cb-list {
+  background: none;
+}
+
+window.nyx-clipboard .cb-list row.cb-row {
+  min-height: 44px;
+  padding: 4px 8px;
+  margin: 0 2px 2px;
+  border-radius: 7px;
+  outline: none;
+  transition: background 120ms ease-out;
+}
+
+window.nyx-clipboard .cb-list row.cb-row:hover {
+  background: @row_hover;
+}
+
+window.nyx-clipboard .cb-list row.cb-row:selected {
+  background: @nav_active;
+  color: @theme_text;
+}
+
+window.nyx-clipboard .cb-list row.marked {
+  box-shadow: inset 2px 0 @theme_accent;
+}
+
+window.nyx-clipboard .cb-glyph {
+  border-radius: 7px;
+  background: alpha(@theme_text, 0.06);
+  color: @theme_dim_text;
+}
+
+window.nyx-clipboard .cb-thumb {
+  border-radius: 7px;
+}
+
+window.nyx-clipboard .accent {
+  color: @theme_accent;
+}
+
+window.nyx-clipboard .cb-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+window.nyx-clipboard .cb-meta {
+  font-size: 11.5px;
+  color: @theme_dim_text;
+  font-feature-settings: "tnum";
+}
+
+window.nyx-clipboard .cb-code {
+  background: alpha(@theme_accent, 0.08);
+}
+
+window.nyx-clipboard .cb-code-text {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+}
+
+window.nyx-clipboard .cb-secret .cb-title {
+  color: @theme_dim_text;
+}
+
+window.nyx-clipboard .cb-mark {
+  color: @theme_accent;
+  -gtk-icon-size: 14px;
+}
+
+window.nyx-clipboard .cb-key {
+  font-size: 10.5px;
+  color: @theme_text_tertiary;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: alpha(@theme_text, 0.05);
+}
+
+window.nyx-clipboard .cb-empty {
+  color: @theme_text_tertiary;
+  font-size: 12.5px;
+  padding: 48px 24px;
+}
+
+/* ---------- Pages ---------- */
+
+window.nyx-clipboard .cb-page {
+  padding: 2px 6px 8px;
+}
+
+window.nyx-clipboard .cb-page-title {
+  font-size: 12px;
+  color: @theme_dim_text;
+}
+
+window.nyx-clipboard textview.cb-result {
+  background: @field;
+  border-radius: 7px;
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12.5px;
+}
+
+window.nyx-clipboard textview.cb-result text {
+  background: transparent;
+}
+
+window.nyx-clipboard .cb-page button {
+  min-height: 30px;
+  padding: 0 14px;
+  border-radius: 7px;
+}
+
+/* ---------- Foot ---------- */
+
+window.nyx-clipboard .cb-foot {
+  padding: 6px 8px 2px;
+}
+
+window.nyx-clipboard .cb-hint,
+window.nyx-clipboard .cb-toast {
+  font-size: 11px;
+  color: @theme_text_tertiary;
+}
+
+window.nyx-clipboard .cb-toast {
+  color: @theme_text;
+}
+
+window.nyx-clipboard .cb-toast.danger {
+  color: @theme_danger;
+}
+
+/* ---------- Menus and previews ---------- */
+
+popover.cb-popover > contents {
+  background: @theme_popover;
+  border: 1px solid @theme_border;
+  border-radius: 11px;
+  padding: 4px;
+}
+
+popover.cb-popover .cb-menu {
+  background: none;
+  min-width: 240px;
+}
+
+popover.cb-popover .cb-menu-row {
+  min-height: 30px;
+  padding: 0 8px;
+  border-radius: 7px;
+}
+
+popover.cb-popover .cb-menu-row:hover,
+popover.cb-popover .cb-menu-row:selected,
+popover.cb-popover .cb-menu-row:focus {
+  background: alpha(@theme_accent, 0.18);
+}
+
+popover.cb-popover .cb-menu-row.danger {
+  color: @theme_danger;
+}
+
+popover.cb-popover .cb-menu-group {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: @theme_text_tertiary;
+  padding: 8px 8px 2px;
+}
+
+tooltip .cb-preview {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12px;
+}

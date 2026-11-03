@@ -1,0 +1,14 @@
+[package]
+name = "nyx-clipboard-dbus"
+description = "Nyx Clipboard's D-Bus names, and a blocking client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+nyx-clipboard-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+zbus.workspace = true

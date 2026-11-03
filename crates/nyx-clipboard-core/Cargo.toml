@@ -1,0 +1,17 @@
+[package]
+name = "nyx-clipboard-core"
+description = "Nyx Clipboard without GTK: content model, classification, secrets, transforms, verification codes, search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+blake3.workspace = true
+libc.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+zeroize.workspace = true

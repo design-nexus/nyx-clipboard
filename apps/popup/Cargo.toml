@@ -1,0 +1,22 @@
+[package]
+name = "nyx-clipboard"
+description = "Nyx Clipboard: the floating clipboard popup (Super + Ctrl + V)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-clipboard"
+path = "src/main.rs"
+
+[dependencies]
+nyx-clipboard-core.workspace = true
+nyx-clipboard-dbus.workspace = true
+nyx-desktop.workspace = true
+nyx-theme.workspace = true
+gtk.workspace = true
+gtk4-layer-shell.workspace = true
+serde.workspace = true
+serde_json.workspace = true

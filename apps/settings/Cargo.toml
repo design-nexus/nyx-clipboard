@@ -1,0 +1,18 @@
+[package]
+name = "nyx-clipboard-settings"
+description = "Nyx Clipboard's page in Nyx Settings (the Settings extension helper)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-clipboard-settings"
+path = "src/main.rs"
+
+[dependencies]
+nyx-clipboard-core.workspace = true
+nyx-clipboard-dbus.workspace = true
+serde_json.workspace = true
+toml.workspace = true

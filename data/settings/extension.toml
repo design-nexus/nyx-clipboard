@@ -1,0 +1,6 @@
+id = "clipboard"
+name = "Clipboard"
+category = "Desktop"
+version = "0.1.0"
+description = "Clipboard history, privacy, snippets, verification codes and the shortcut."
+exec = "nyx-clipboard-settings"

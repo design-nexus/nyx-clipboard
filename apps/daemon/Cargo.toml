@@ -1,0 +1,26 @@
+[package]
+name = "nyx-clipboardd"
+description = "Nyx Clipboard service: watches the Wayland clipboard, keeps the history, holds verification codes in memory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "nyx-clipboardd"
+path = "src/main.rs"
+
+[dependencies]
+nyx-clipboard-core.workspace = true
+nyx-clipboard-store.workspace = true
+nyx-clipboard-dbus.workspace = true
+nyx-desktop.workspace = true
+async-channel = "2"
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+wl-clipboard-rs.workspace = true
+zbus.workspace = true
+zeroize.workspace = true
+toml.workspace = true

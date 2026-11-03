@@ -1,0 +1,31 @@
+{
+  "name": "nyx-clipboard",
+  "version": "0.1.0",
+  "app_id": "io.github.design_nexus.nyx.Clipboard",
+  "description": "Clipboard history, snippets and verification codes for the Nyx desktop",
+  "binary": "nyx-clipboard",
+  "categories": [
+    "Utility"
+  ],
+  "application": "clipboard",
+  "directory": ".",
+  "packages": [
+    "nyx-clipboard",
+    "nyx-clipboardd",
+    "nyx-clipboard-settings"
+  ],
+  "manifest": "Cargo.toml",
+  "prepare": [],
+  "binaries": [],
+  "test_commands": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "nyx-clipboard-core",
+      "-p",
+      "nyx-clipboard-store"
+    ]
+  ]
+}

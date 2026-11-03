@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Clipboard
+GenericName=Clipboard History
+Comment=Find, paste and reuse what you copied
+Exec=nyx-clipboard --toggle
+Icon=io.github.design_nexus.nyx.Clipboard
+Terminal=false
+StartupNotify=false
+NoDisplay=false
+Keywords=clipboard;history;paste;copy;snippets;
+StartupWMClass=io.github.design_nexus.nyx.Clipboard
+Categories=Utility;GTK;
