@@ -612,6 +612,7 @@ impl Popup {
             b.append(&k);
         }
         row.set_child(Some(&b));
+        row.update_property(&[gtk::accessible::Property::Label(&format!("{title}. {meta}"))]);
         // Hover previews: the whole text or a larger image, fetched when first wanted.
         if let Item::Entry(e) = item {
             row.set_has_tooltip(true);
@@ -1514,7 +1515,9 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
 
     let stack = gtk::Stack::new();
     stack.set_transition_type(gtk::StackTransitionType::Crossfade);
-    stack.set_transition_duration(120);
+    // Reduce motion (the desktop's animations off) means no crossfade either.
+    let animate = gtk::Settings::default().is_none_or(|s| s.is_gtk_enable_animations());
+    stack.set_transition_duration(if animate { 120 } else { 0 });
     stack.set_vhomogeneous(false);
     stack.set_interpolate_size(true);
 
