@@ -22,12 +22,13 @@ pub const APP_ID: &str = "io.github.design_nexus.nyx.Clipboard";
 
 const USAGE: &str = "Usage: nyx-clipboard [--toggle [recent|pinned|snippets] | --show | --hide] [--only <output>]
        nyx-clipboard --integrate [KEY] | --unintegrate
-       nyx-clipboard --list [QUERY]
+       nyx-clipboard --list [QUERY] | --actions ID | --run ID ACTION [ARGS]
 
 With no option, start (hidden). The options open or close the running popup;
 --toggle with a view's name opens it on that view. --integrate binds the shortcut
 (Settings' key, normally SUPER + CTRL + V) in Hyprland; --unintegrate gives the key
-back to Omarchy. --list prints the history as JSON.
+back to Omarchy. --list prints the history as JSON; --actions the actions an entry
+offers; --run runs one (ARGS: JSON such as {\"paste\":true}).
 ";
 
 fn cli() -> Option<std::process::ExitCode> {
@@ -71,6 +72,42 @@ fn cli() -> Option<std::process::ExitCode> {
                 fail
             }
         }),
+        Some("--actions") => {
+            let Some(id) = args.get(1).and_then(|a| a.parse::<i64>().ok()) else {
+                eprintln!("nyx-clipboard: --actions takes an entry id (from --list)");
+                return Some(fail);
+            };
+            let r = nyx_clipboard_dbus::Client::connect().and_then(|c| c.call::<_, String>(nyx_clipboard_dbus::ACTIONS, "List", &(id,)));
+            Some(match r {
+                Ok(v) => {
+                    println!("{v}");
+                    ok
+                }
+                Err(e) => {
+                    eprintln!("nyx-clipboard: {e}");
+                    fail
+                }
+            })
+        }
+        Some("--run") => {
+            let (Some(id), Some(action)) = (args.get(1).and_then(|a| a.parse::<i64>().ok()), args.get(2)) else {
+                eprintln!("nyx-clipboard: --run takes an entry id and an action id (from --actions)");
+                return Some(fail);
+            };
+            let extra = args.get(3).cloned().unwrap_or_default();
+            let r = nyx_clipboard_dbus::Client::connect()
+                .and_then(|c| c.call::<_, String>(nyx_clipboard_dbus::ACTIONS, "Run", &(id, action.as_str(), extra.as_str())));
+            Some(match r {
+                Ok(v) => {
+                    println!("{v}");
+                    ok
+                }
+                Err(e) => {
+                    eprintln!("nyx-clipboard: {e}");
+                    fail
+                }
+            })
+        }
         Some("--list") => {
             let text = args.get(1).cloned().unwrap_or_default();
             let r = nyx_clipboard_dbus::Client::connect()

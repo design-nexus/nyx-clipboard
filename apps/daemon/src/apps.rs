@@ -40,6 +40,15 @@ fn bin(name: &str) -> Option<PathBuf> {
     home.exists().then_some(home)
 }
 
+/// Absolute paths from a files entry (`~/` expanded).
+fn local_paths(text: &str) -> Vec<String> {
+    let home = std::env::var("HOME").unwrap_or_default();
+    text.lines()
+        .map(str::trim)
+        .filter_map(|l| if let Some(rest) = l.strip_prefix("~/") { Some(format!("{home}/{rest}")) } else { l.starts_with('/').then(|| l.to_string()) })
+        .collect()
+}
+
 fn assistant_socket() -> PathBuf {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -47,8 +56,21 @@ fn assistant_socket() -> PathBuf {
         .join("nyx-assistant/assistant.sock")
 }
 
+/// The Assistant's private socket is there and something answers on it (a socket left
+/// by a stopped Assistant refuses connections).
 fn assistant_ready() -> bool {
-    std::fs::symlink_metadata(assistant_socket()).is_ok_and(|m| m.file_type().is_socket() && m.permissions().mode() & 0o077 == 0)
+    static CACHE: Mutex<Option<(Instant, bool)>> = Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, v)) = *c
+        && at.elapsed() < Duration::from_secs(10)
+    {
+        return v;
+    }
+    let socket = assistant_socket();
+    let v = std::fs::symlink_metadata(&socket).is_ok_and(|m| m.file_type().is_socket() && m.permissions().mode() & 0o077 == 0)
+        && std::os::unix::net::UnixStream::connect(&socket).is_ok();
+    *c = Some((Instant::now(), v));
+    v
 }
 
 /// Whether Capture is new enough to read text from a file.
@@ -178,7 +200,7 @@ fn share_items(st: &State, id: i64, text: &str, kind: Kind) -> Result<Value, Str
         return Ok(json!([{ "kind": "image", "path": path, "name": name, "mime": mime }]));
     }
     if kind == Kind::Files {
-        let items: Vec<Value> = text.lines().filter(|l| l.starts_with('/')).map(|p| json!({ "kind": "file", "path": p })).collect();
+        let items: Vec<Value> = local_paths(text).iter().map(|p| json!({ "kind": "file", "path": p })).collect();
         return Ok(Value::Array(items));
     }
     let k = if kind == Kind::Url { "url" } else { "text" };
@@ -285,7 +307,7 @@ pub fn run(st: &Arc<State>, id: i64, action: &str, text: &str, kind: Kind, args:
     }
     match action {
         "reveal" => {
-            let uris: Vec<String> = text.lines().filter(|l| l.starts_with('/')).map(|p| format!("file://{}", classify::percent_encode_path(p))).collect();
+            let uris: Vec<String> = local_paths(text).iter().map(|p| format!("file://{}", classify::percent_encode_path(p))).collect();
             let conn = match session(st) {
                 Ok(c) => c,
                 Err(e) => return fail(e),
