@@ -34,6 +34,7 @@ zbus = "5"
 wl-clipboard-rs = "0.9.4"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
 gtk4-layer-shell = "0.8"
+nyx-peer = { git = "https://github.com/design-nexus/nyx-core.git", rev = "0f1c0e8f0359a58f2d702180f34dafffafe3db44" }
 nyx-desktop = { git = "https://github.com/design-nexus/nyx-core.git", rev = "9dc196245bbf0ccc93b8bf04ac61bb476b85e4d5", default-features = false }
 nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "976fed940841a2a505ffe644f632cb60e12988a8" }
 

@@ -49,12 +49,15 @@ pub struct Peer {
 }
 
 /// The scope for an executable path: one of `PEERS`, or another `nyx-*` program, in
-/// `allowed_dir`. A binary replaced while running reads as "… (deleted)" and is refused.
+/// `allowed_dir` or a folder the system trusts (see `nyx_peer`). A binary replaced
+/// while running reads as "… (deleted)" and is refused.
 pub fn scope_of(exe: &Path, allowed_dir: &Path) -> Option<Scope> {
-    if exe.parent()? != allowed_dir {
-        return None;
-    }
-    let name = exe.file_name()?.to_str()?;
+    let name = nyx_peer::program(exe, allowed_dir)?;
+    scope_for(&name)
+}
+
+/// The scope for a program name.
+fn scope_for(name: &str) -> Option<Scope> {
     if let Some((_, scope)) = PEERS.iter().find(|(n, _)| *n == name) {
         return Some(*scope);
     }
@@ -90,8 +93,8 @@ pub fn identify(uid: Option<u32>, pid: Option<u32>, pidfd: Option<BorrowedFd<'_>
     if !still || start_time(pid)? != started {
         return None;
     }
-    let scope = scope_of(&exe, allowed_dir)?;
-    let app = exe.file_name()?.to_str()?.to_string();
+    let app = nyx_peer::program(&exe, allowed_dir)?;
+    let scope = scope_for(&app)?;
     Some(Peer { pid, scope, app })
 }
 
@@ -127,6 +130,14 @@ mod tests {
         assert_eq!(scope_of(Path::new("/usr/bin/busctl"), dir), None);
         assert_eq!(scope_of(&dir.join("python3"), dir), None);
         assert_eq!(scope_of(Path::new("/home/u/.local/bin/nyx-glimpse (deleted)"), dir), None);
+    }
+
+    #[test]
+    fn nix_wrapped_programs_keep_their_scope() {
+        let dir = Path::new("/nix/store/abc-nyx-clipboard/bin");
+        assert_eq!(scope_of(&dir.join(".nyx-clipboard-wrapped"), dir), Some(Scope::Popup));
+        assert_eq!(scope_of(&dir.join(".nyx-clipboard-settings-wrapped"), dir), Some(Scope::Settings));
+        assert_eq!(scope_of(&dir.join(".nyx-clipboard-other-wrapped"), dir), None);
     }
 
     #[test]
