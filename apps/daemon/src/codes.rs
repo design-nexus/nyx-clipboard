@@ -230,7 +230,7 @@ impl Otp {
     /// Copy a code the caller shows (the Notification Center), the same safe way.
     async fn copy_code(&self, #[zbus(header)] hdr: Header<'_>, #[zbus(connection)] conn: &zbus::Connection, code: &str) -> fdo::Result<bool> {
         self.state.require(conn, &hdr, &[Scope::Popup, Scope::NotificationCenter]).await?;
-        if code.is_empty() || code.len() > 32 || !code.chars().all(|c| c.is_ascii_alphanumeric()) {
+        if code.is_empty() || code.len() > 32 || !code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(fdo::Error::InvalidArgs("not a verification code".into()));
         }
         copy_code(&self.state, zeroize::Zeroizing::new(code.to_string()), false)
