@@ -1014,17 +1014,18 @@ dependencies = [
 [[package]]
 name = "nyx-desktop"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=9dc196245bbf0ccc93b8bf04ac61bb476b85e4d5#9dc196245bbf0ccc93b8bf04ac61bb476b85e4d5"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=4378e243aeb09733843996663cd9a5a7f0cbb821#4378e243aeb09733843996663cd9a5a7f0cbb821"
 dependencies = [
  "anyhow",
  "serde",
  "serde_json",
+ "toml",
 ]
 
 [[package]]
 name = "nyx-peer"
 version = "0.1.0"
-source = "git+https://github.com/design-nexus/nyx-core.git?rev=0f1c0e8f0359a58f2d702180f34dafffafe3db44#0f1c0e8f0359a58f2d702180f34dafffafe3db44"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=4378e243aeb09733843996663cd9a5a7f0cbb821#4378e243aeb09733843996663cd9a5a7f0cbb821"
 
 [[package]]
 name = "nyx-theme"
