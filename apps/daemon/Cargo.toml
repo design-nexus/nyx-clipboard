@@ -16,6 +16,7 @@ nyx-clipboard-core.workspace = true
 nyx-clipboard-store.workspace = true
 nyx-clipboard-dbus.workspace = true
 nyx-desktop.workspace = true
+nyx-connect.workspace = true
 async-channel = "2"
 libc.workspace = true
 serde.workspace = true
@@ -24,3 +25,6 @@ wl-clipboard-rs.workspace = true
 zbus.workspace = true
 zeroize.workspace = true
 toml.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

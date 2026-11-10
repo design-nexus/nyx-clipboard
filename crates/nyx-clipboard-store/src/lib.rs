@@ -143,7 +143,23 @@ impl Store {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "secure_delete", "ON")?;
         conn.execute_batch(SCHEMA)?;
+        // Columns added after the first release.
+        let has: Vec<String> =
+            conn.prepare("SELECT name FROM pragma_table_info('entries')")?.query_map([], |r| r.get(0))?.collect::<Result<_>>()?;
+        if !has.iter().any(|c| c == "origin") {
+            conn.execute_batch("ALTER TABLE entries ADD COLUMN origin TEXT")?;
+        }
         Ok(Store { conn, blobs: blobs.to_path_buf() })
+    }
+
+    /// Where a copy came from when it wasn't this computer: `flux:<device id>` for one a
+    /// device synced through Flux.
+    pub fn set_origin(&self, id: i64, origin: &str) -> Result<()> {
+        self.conn.execute("UPDATE entries SET origin = ?2 WHERE id = ?1", params![id, origin]).map(drop)
+    }
+
+    pub fn origin(&self, id: i64) -> Result<Option<String>> {
+        self.conn.query_row("SELECT origin FROM entries WHERE id = ?1", [id], |r| r.get(0)).optional().map(Option::flatten)
     }
 
     pub fn default_paths() -> (PathBuf, PathBuf) {

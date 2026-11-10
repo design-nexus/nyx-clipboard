@@ -3,7 +3,7 @@
 //! polls. Each new copy is read (bounded in size and time), classified, checked against
 //! private mode, excluded apps and secrets, and stored.
 
-use crate::clip;
+use crate::{clip, connect};
 use crate::state::State;
 use nyx_clipboard_core::classify::{self, classify};
 use nyx_clipboard_core::model::Rep;
@@ -118,11 +118,34 @@ pub fn take(st: &State, offered: &[String], mut read: impl FnMut(&str, usize) ->
     if offered.iter().any(|m| m == clip::MARKER) {
         let id = read(clip::MARKER, 32).and_then(|d| String::from_utf8(d).ok()).and_then(|s| s.trim().parse::<i64>().ok());
         if let Some(id) = id {
-            return st.store.lock().ok().map(|s| s.touch(id, now()).unwrap_or(false));
+            let store = st.store.lock().ok()?;
+            let touched = store.touch(id, now()).unwrap_or(false);
+            if touched {
+                let from = store.origin(id).ok().flatten().and_then(|o| o.strip_prefix("flux:").map(str::to_string));
+                let what = match store.detail(id) {
+                    Ok(Some(d)) if d.entry.kind == nyx_clipboard_core::model::Kind::Image => Some(connect::Copied::Image),
+                    Ok(Some(d)) if !d.text.is_empty() && !d.truncated => Some(connect::Copied::Text(d.text)),
+                    _ => None,
+                };
+                drop(store);
+                if let Some(what) = what {
+                    connect::copied(what, from);
+                }
+            }
+            return Some(touched);
         }
     }
-    let app = clip::focused_class();
-    if app.as_deref().is_some_and(|a| settings.excludes(a)) {
+    // A device's copy (Flux): from that device, not from the focused app.
+    let remote = if offered.iter().any(|m| m == clip::REMOTE) {
+        Some(read(clip::REMOTE, 256).and_then(|d| clip::remote_origin(&d))?)
+    } else {
+        None
+    };
+    let app = match &remote {
+        Some((_, name)) => Some(name.clone()).filter(|n| !n.is_empty()),
+        None => clip::focused_class(),
+    };
+    if remote.is_none() && app.as_deref().is_some_and(|a| settings.excludes(a)) {
         return None;
     }
     let max = settings.max_item_mb as usize * 1024 * 1024;
@@ -159,5 +182,63 @@ pub fn take(st: &State, offered: &[String], mut read: impl FnMut(&str, usize) ->
     if inserted.new {
         let _ = store.prune(&settings, now());
     }
+    match &remote {
+        Some((device, _)) => {
+            let _ = store.set_origin(inserted.id, &format!("flux:{device}"));
+        }
+        None => {
+            drop(store);
+            let what = match captured.kind {
+                nyx_clipboard_core::model::Kind::Image => connect::Copied::Image,
+                _ => connect::Copied::Text(captured.text.clone()),
+            };
+            connect::copied(what, None);
+        }
+    }
     Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nyx_clipboard_store::Store;
+
+    fn state(name: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("nyx-clipboardd-watch-{}-{name}", std::process::id()));
+        // SAFETY: the only tests that read XDG_CONFIG_HOME, all setting the same kind of
+        // scratch folder (default settings).
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", dir.join("config")) };
+        State::new(Store::in_memory(&dir.join("blobs")).unwrap())
+    }
+
+    fn remote(text: &'static str) -> impl FnMut(&str, usize) -> Option<Vec<u8>> {
+        move |mime, _| Some(if mime == clip::REMOTE { b"a1b2c3 Pandora".to_vec() } else { text.as_bytes().to_vec() })
+    }
+
+    #[test]
+    fn a_copy_from_a_device_keeps_where_it_came_from() {
+        let st = state("remote");
+        let offered = vec![classify::TEXT.to_string(), clip::REMOTE.to_string()];
+        assert_eq!(take(&st, &offered, remote("from the phone")), Some(true));
+        let store = st.store.lock().unwrap();
+        let e = store.latest().unwrap().unwrap();
+        assert_eq!(e.app.as_deref(), Some("Pandora"));
+        assert_eq!(store.origin(e.id).unwrap().as_deref(), Some("flux:a1b2c3"));
+    }
+
+    #[test]
+    fn a_secret_from_a_device_is_not_kept_either() {
+        let st = state("secret");
+        let offered = vec![classify::TEXT.to_string(), clip::REMOTE.to_string()];
+        assert_eq!(take(&st, &offered, remote("ghp_abcdefghijklmnopqrstuvwxyz0123456789")), Some(false));
+        assert!(st.store.lock().unwrap().latest().unwrap().is_none());
+    }
+
+    #[test]
+    fn a_bad_marker_is_ignored_entirely() {
+        let st = state("bad");
+        let offered = vec![classify::TEXT.to_string(), clip::REMOTE.to_string()];
+        let read = |mime: &str, _| Some(if mime == clip::REMOTE { b"../../etc x".to_vec() } else { b"hi".to_vec() });
+        assert_eq!(take(&st, &offered, read), None);
+    }
 }

@@ -2,6 +2,7 @@
 //!
 //! - Watches the Wayland clipboard (data-control; no polling) and keeps the history in
 //!   SQLite, skipping private mode, excluded apps, password-manager copies and secrets.
+//! - Syncs what it keeps with devices paired in Flux, when that's on (connect.rs).
 //! - Serves `io.github.design_nexus.nyx.Clipboard1` (history, snippets, paste),
 //!   `…Clipboard.Actions1` (contextual actions) and `…Clipboard.Otp1` (verification
 //!   codes, held in locked memory and never written anywhere) to callers it can
@@ -13,6 +14,7 @@ mod actions;
 mod apps;
 mod clip;
 mod codes;
+mod connect;
 mod service;
 mod state;
 mod watch;
@@ -274,6 +276,8 @@ fn main() -> std::process::ExitCode {
         let conn = conn.clone();
         std::thread::spawn(move || drop_departed(st, conn));
     }
+    // Clipboard sync with devices paired in Flux, while it's on in Settings.
+    let _devices = connect::start(st.clone());
     watch::run(st);
     std::process::ExitCode::FAILURE
 }

@@ -180,3 +180,28 @@ fn ten_thousand_entries_search_fast() {
     // Debug builds are slow; the release budget is 16 ms.
     assert!(recent.as_millis() < 50);
 }
+
+#[test]
+fn a_copy_from_a_device_keeps_its_origin_and_an_old_database_gains_the_column() {
+    let dir = tmp("origin");
+    let db = dir.join("clipboard.db");
+    {
+        // A history from before the column.
+        let conn = Connection::open(&db).unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        conn.execute(
+            "INSERT INTO entries(hash, kind, preview, size, chars, mimes, created, last_used) VALUES ('h', 'text', 'old', 3, 3, '[]', 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+    let mut s = Store::open(&db, &dir.join("blobs")).unwrap();
+    let old = s.search(&Search::default()).unwrap()[0].id;
+    assert_eq!(s.origin(old).unwrap(), None);
+    let from_phone = s.insert(&text("from the phone"), Some("Pandora"), 2.0).unwrap();
+    s.set_origin(from_phone.id, "flux:a1b2").unwrap();
+    assert_eq!(s.origin(from_phone.id).unwrap().as_deref(), Some("flux:a1b2"));
+    assert_eq!(s.entry(from_phone.id).unwrap().unwrap().app.as_deref(), Some("Pandora"));
+    drop(s);
+    assert!(Store::open(&db, &dir.join("blobs")).is_ok(), "opens again with the column there");
+}

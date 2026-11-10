@@ -12,9 +12,32 @@ use wl_clipboard_rs::paste;
 /// entry up instead of storing it again. Its value is the entry id.
 pub const MARKER: &str = "application/x-nyx-clipboard-entry";
 
+/// Marks a copy that arrived from a device through Flux (Nyx Connect), so the watcher
+/// records where it came from and doesn't send it back out. Its value is the device's
+/// Flux ID, a space, and its name.
+pub const REMOTE: &str = "application/x-nyx-clipboard-remote";
+
 /// Offer `reps` (best first). `entry` adds the marker; `sensitive` the password-manager
 /// hint, so clipboard managers (this one included) don't keep it.
 pub fn set(reps: &[Rep], entry: Option<i64>, sensitive: bool) -> Result<(), String> {
+    let marker = entry.map(|id| (MARKER, id.to_string()));
+    offer(reps, marker, sensitive)
+}
+
+/// Offer a copy from a device: `reps` with the [`REMOTE`] marker.
+pub fn set_remote(reps: &[Rep], device: &str, name: &str) -> Result<(), String> {
+    offer(reps, Some((REMOTE, format!("{device} {name}"))), false)
+}
+
+/// The device a [`REMOTE`] marker names: its ID and name.
+pub fn remote_origin(value: &[u8]) -> Option<(String, String)> {
+    let text = std::str::from_utf8(value).ok()?.trim();
+    let (id, name) = text.split_once(' ').unwrap_or((text, ""));
+    let valid = !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    valid.then(|| (id.to_string(), name.chars().take(64).collect()))
+}
+
+fn offer(reps: &[Rep], marker: Option<(&str, String)>, sensitive: bool) -> Result<(), String> {
     if reps.is_empty() {
         return Err("nothing to copy".into());
     }
@@ -34,10 +57,10 @@ pub fn set(reps: &[Rep], entry: Option<i64>, sensitive: bool) -> Result<(), Stri
         g.extend_from_slice(uris.join("\n").as_bytes());
         sources.push(MimeSource { source: Source::Bytes(g.into_boxed_slice()), mime_type: MimeType::Specific(classify::GNOME_FILES.into()) });
     }
-    if let Some(id) = entry {
+    if let Some((mime, value)) = marker {
         sources.push(MimeSource {
-            source: Source::Bytes(id.to_string().into_bytes().into_boxed_slice()),
-            mime_type: MimeType::Specific(MARKER.into()),
+            source: Source::Bytes(value.into_bytes().into_boxed_slice()),
+            mime_type: MimeType::Specific(mime.into()),
         });
     }
     let mut opts = Options::new();

@@ -990,13 +990,26 @@ dependencies = [
  "nyx-clipboard-core",
  "nyx-clipboard-dbus",
  "nyx-clipboard-store",
+ "nyx-connect",
  "nyx-desktop",
  "serde",
  "serde_json",
+ "tempfile",
  "toml",
  "wl-clipboard-rs",
  "zbus",
  "zeroize",
+]
+
+[[package]]
+name = "nyx-connect"
+version = "0.1.0"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=43d7c2e7684be8274c764619c5ac3886ed6b9438#43d7c2e7684be8274c764619c5ac3886ed6b9438"
+dependencies = [
+ "nyx-devices",
+ "serde",
+ "serde_json",
+ "toml",
 ]
 
 [[package]]
@@ -1020,6 +1033,15 @@ dependencies = [
  "serde",
  "serde_json",
  "toml",
+]
+
+[[package]]
+name = "nyx-devices"
+version = "0.1.0"
+source = "git+https://github.com/design-nexus/nyx-core.git?rev=43d7c2e7684be8274c764619c5ac3886ed6b9438#43d7c2e7684be8274c764619c5ac3886ed6b9438"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

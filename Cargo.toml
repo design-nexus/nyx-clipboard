@@ -36,6 +36,8 @@ gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
 gtk4-layer-shell = "0.8"
 nyx-peer = { git = "https://github.com/design-nexus/nyx-core.git", rev = "4378e243aeb09733843996663cd9a5a7f0cbb821" }
 nyx-desktop = { git = "https://github.com/design-nexus/nyx-core.git", rev = "4378e243aeb09733843996663cd9a5a7f0cbb821", default-features = false }
+# Flux's fluxd as Nyx's device model (Nyx Connect): clipboard sync with paired devices.
+nyx-connect = { git = "https://github.com/design-nexus/nyx-core.git", rev = "43d7c2e7684be8274c764619c5ac3886ed6b9438" }
 nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "40db521bab468d54f18f65c6aabd7fc8533d6a4d" }
 
 [profile.release]
