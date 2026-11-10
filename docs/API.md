@@ -20,7 +20,8 @@ folder (`~/.local/bin` when installed) and decides the caller's scope:
 | `nyx-notifyd` | Notifications | `Otp1.Offer`, `Otp1.Dismiss` |
 | `nyx-notification-center` | NotificationCenter | `Otp1.CopyCode` |
 | `nyx-passwordsd` | Vault | `Otp1.Match`, `Otp1.Take` |
-| any other `nyx-*` | App | `Actions1.Register`, `Unregister` |
+| `nyx-actions` (the `nyx` command), `nyx-glimpse-backend` | Command | `Control`: status, private mode on, clear (asking first), open |
+| any other `nyx-*` | App | `Actions1.Register`, `Unregister`; `Control`: status, private mode on, open |
 
 Anything else (busctl, scripts, other users, other folders) gets
 `org.freedesktop.DBus.Error.AccessDenied`.
@@ -128,3 +129,13 @@ nyx-clipboard --actions 42                  # what entry 42 offers
 nyx-clipboard --run 42 ocr                  # run one; prints the outcome
 tests/dbus.sh && tests/codes.sh             # the checks, on a private bus
 ```
+
+## Control (`io.github.design_nexus.nyx.Control`)
+
+The suite's control interface (API 2, nyx-core's nyx-actions contract) on the same
+path, for `nyx clipboard …`, Glimpse's commands and Nyx Assistant:
+`clipboard.status` (counts and private mode, nothing from the history),
+`clipboard.private` (turns private mode on; off stays with the popup and Settings),
+`clipboard.clear` (Command scope only, and only confirmed) and `clipboard.open`.
+`nyx-clipboardd --describe-actions` prints the description the installer writes to
+`~/.local/share/nyx/actions/`.

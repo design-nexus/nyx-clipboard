@@ -16,6 +16,7 @@ if [[ -x $bin/nyx-clipboard ]]; then
   "$bin/nyx-clipboard" --unintegrate || true
 fi
 systemctl --user disable --now nyx-clipboard.service nyx-clipboardd.service 2>/dev/null || true
+rm -f "$share/nyx/actions/io.github.design_nexus.nyx.Clipboard.json"
 rm -f "$bin/nyx-clipboard" "$bin/nyx-clipboardd" "$bin/nyx-clipboard-settings" \
   "$config/systemd/user/nyx-clipboard.service" "$config/systemd/user/nyx-clipboardd.service" \
   "$share/dbus-1/services/io.github.design_nexus.nyx.Clipboard1.service" \

@@ -15,6 +15,7 @@ mod apps;
 mod clip;
 mod codes;
 mod connect;
+mod control;
 mod service;
 mod state;
 mod watch;
@@ -207,6 +208,10 @@ fn main() -> std::process::ExitCode {
             println!("nyx-clipboardd {}", env!("CARGO_PKG_VERSION"));
             return std::process::ExitCode::SUCCESS;
         }
+        Some("--describe-actions") => {
+            println!("{}", control::description());
+            return std::process::ExitCode::SUCCESS;
+        }
         Some("-h" | "--help") => {
             println!("Usage: nyx-clipboardd\n\nThe Nyx Clipboard service (normally a user service: nyx-clipboardd.service).");
             return std::process::ExitCode::SUCCESS;
@@ -236,6 +241,7 @@ fn main() -> std::process::ExitCode {
         .and_then(|b| b.serve_at(PATH, service::Service { state: st.clone() }))
         .and_then(|b| b.serve_at(PATH, actions::Actions { state: st.clone() }))
         .and_then(|b| b.serve_at(PATH, codes::Otp { state: st.clone() }))
+        .and_then(|b| b.serve_at(PATH, control::Control { state: st.clone() }))
         .and_then(|b| b.build());
     let conn = match built {
         Ok(c) => c,

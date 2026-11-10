@@ -76,6 +76,12 @@ for host in nyx-settings settings; do
   install -m 644 "$src/data/settings/extension.toml" "$ext/extension.toml"
 done
 
+# What Clipboard offers nyx clipboard …, Glimpse and the Assistant (its action manifest;
+# nothing from the history).
+mkdir -p "$share/nyx/actions"
+"$bin/nyx-clipboardd" --describe-actions >"$share/nyx/actions/io.github.design_nexus.nyx.Clipboard.json" 2>/dev/null ||
+  rm -f "$share/nyx/actions/io.github.design_nexus.nyx.Clipboard.json"
+
 systemctl --user daemon-reload 2>/dev/null || true
 # The history service has no window, so it simply restarts on the new build.
 systemctl --user enable nyx-clipboardd.service 2>/dev/null || true
