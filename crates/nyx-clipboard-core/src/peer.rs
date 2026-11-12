@@ -19,7 +19,8 @@ pub enum Scope {
     Popup,
     /// The Settings page: status, private mode, clearing history.
     Settings,
-    /// Glimpse's `cb` search: the history and actions; never codes.
+    /// Glimpse (its GTK panel and the Quickshell panel's backend): the `cb` search's
+    /// history and actions, and clearing the history as its commands do; never codes.
     Glimpse,
     /// The notification service: offering codes from notifications.
     Notifications,
@@ -27,8 +28,8 @@ pub enum Scope {
     NotificationCenter,
     /// The Passwords (Vault) daemon: codes for the browser extension, by website.
     Vault,
-    /// The person's own command frontends (the `nyx` command, Glimpse's backend):
-    /// Clipboard's control actions, clearing the history included; never the history.
+    /// The `nyx` command: Clipboard's control actions, clearing the history included;
+    /// never the history.
     Command,
     /// Any other Nyx app beside the daemon: registering its own actions only.
     App,
@@ -38,11 +39,11 @@ const PEERS: &[(&str, Scope)] = &[
     ("nyx-clipboard", Scope::Popup),
     ("nyx-clipboard-settings", Scope::Settings),
     ("nyx-glimpse", Scope::Glimpse),
+    ("nyx-glimpse-backend", Scope::Glimpse),
     ("nyx-notifyd", Scope::Notifications),
     ("nyx-notification-center", Scope::NotificationCenter),
     ("nyx-passwordsd", Scope::Vault),
     ("nyx-actions", Scope::Command),
-    ("nyx-glimpse-backend", Scope::Command),
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,7 +131,7 @@ mod tests {
         assert_eq!(scope_of(&dir.join("nyx-passwordsd"), dir), Some(Scope::Vault));
         assert_eq!(scope_of(&dir.join("nyx-notes"), dir), Some(Scope::App));
         assert_eq!(scope_of(&dir.join("nyx-actions"), dir), Some(Scope::Command), "the nyx command");
-        assert_eq!(scope_of(&dir.join("nyx-glimpse-backend"), dir), Some(Scope::Command));
+        assert_eq!(scope_of(&dir.join("nyx-glimpse-backend"), dir), Some(Scope::Glimpse), "the Quickshell panel's cb");
         assert_eq!(scope_of(&dir.join("nyx-aid"), dir), Some(Scope::App), "AI Core is an app here");
         assert_eq!(scope_of(&dir.join("nyx-clipboard-other"), dir), None);
         assert_eq!(scope_of(&dir.join("nyx-Notes"), dir), None);

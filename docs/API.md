@@ -15,12 +15,12 @@ folder (`~/.local/bin` when installed) and decides the caller's scope:
 | Program | Scope | May use |
 | --- | --- | --- |
 | `nyx-clipboard` (the popup) | Popup | everything below except `Otp1.Offer`, `Match`, `Take` |
-| `nyx-glimpse` | Glimpse | `Clipboard1` history methods and `Actions1.List`/`Run`; no codes |
+| `nyx-glimpse`, `nyx-glimpse-backend` (the Quickshell panel's search) | Glimpse | `Clipboard1` history methods, `Actions1.List`/`Run` and `Control` like Command; no codes |
 | `nyx-clipboard-settings` | Settings | `Status`, `Private`, `SetPrivate`, `Clear`, `Reload`, `Actions1.Manifests` |
 | `nyx-notifyd` | Notifications | `Otp1.Offer`, `Otp1.Dismiss` |
 | `nyx-notification-center` | NotificationCenter | `Otp1.CopyCode` |
 | `nyx-passwordsd` | Vault | `Otp1.Match`, `Otp1.Take` |
-| `nyx-actions` (the `nyx` command), `nyx-glimpse-backend` | Command | `Control`: status, private mode on, clear (asking first), open |
+| `nyx-actions` (the `nyx` command) | Command | `Control`: status, private mode on, clear (asking first), open |
 | any other `nyx-*` | App | `Actions1.Register`, `Unregister`; `Control`: status, private mode on, open |
 
 Anything else (busctl, scripts, other users, other folders) gets
@@ -136,6 +136,6 @@ The suite's control interface (API 2, nyx-core's nyx-actions contract) on the sa
 path, for `nyx clipboard …`, Glimpse's commands and Nyx Assistant:
 `clipboard.status` (counts and private mode, nothing from the history),
 `clipboard.private` (turns private mode on; off stays with the popup and Settings),
-`clipboard.clear` (Command scope only, and only confirmed) and `clipboard.open`.
+`clipboard.clear` (the popup, Settings, Glimpse and Command scopes only, and only confirmed) and `clipboard.open`.
 `nyx-clipboardd --describe-actions` prints the description the installer writes to
 `~/.local/share/nyx/actions/`.

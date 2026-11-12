@@ -18,7 +18,7 @@ use zbus::{fdo, interface};
 const ANY: &[Scope] = &[Scope::Popup, Scope::Settings, Scope::Glimpse, Scope::Command, Scope::App];
 /// Callers that may clear the history: the popup, Settings, and the person's own
 /// command frontends (the `nyx` command, Glimpse), never other apps or agents.
-const CLEARERS: &[Scope] = &[Scope::Popup, Scope::Settings, Scope::Command];
+const CLEARERS: &[Scope] = &[Scope::Popup, Scope::Settings, Scope::Glimpse, Scope::Command];
 
 pub fn description() -> Value {
     let none = json!({"type": "object", "properties": {}, "additionalProperties": false});
