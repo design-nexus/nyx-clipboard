@@ -34,11 +34,11 @@ zbus = "5"
 wl-clipboard-rs = "0.9.4"
 gtk = { package = "gtk4", version = "0.11", features = ["v4_18"] }
 gtk4-layer-shell = "0.8"
-nyx-peer = { git = "https://github.com/design-nexus/nyx-core.git", rev = "4f05fb8fc92ec211f4e0f0b722fdf29a083c9e89" }
-nyx-desktop = { git = "https://github.com/design-nexus/nyx-core.git", rev = "4f05fb8fc92ec211f4e0f0b722fdf29a083c9e89", default-features = false }
+nyx-peer = { git = "https://github.com/design-nexus/nyx-core.git", rev = "32f0c5e154fc44c763b8ecd80d35a3b298723afa" }
+nyx-desktop = { git = "https://github.com/design-nexus/nyx-core.git", rev = "32f0c5e154fc44c763b8ecd80d35a3b298723afa", default-features = false }
 # Flux's fluxd as Nyx's device model (Nyx Connect): clipboard sync with paired devices.
-nyx-connect = { git = "https://github.com/design-nexus/nyx-core.git", rev = "4f05fb8fc92ec211f4e0f0b722fdf29a083c9e89" }
-nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "cf393978364ca7b2a309a88a8d1651bf9d338916" }
+nyx-connect = { git = "https://github.com/design-nexus/nyx-core.git", rev = "32f0c5e154fc44c763b8ecd80d35a3b298723afa" }
+nyx-theme = { git = "https://github.com/design-nexus/nyx-design.git", rev = "4f8e16d6ae3dbc2a14091271e3b6bb29902c0df4" }
 
 [profile.release]
 lto = "thin"
