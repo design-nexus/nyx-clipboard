@@ -1,7 +1,9 @@
 //! The popup: a layer-shell overlay over the focused screen holding one solid card,
-//! placed at the screen's centre or at the pointer. A click beside the card closes it.
-//! Typing searches; arrows move; Enter pastes. It stays in memory while hidden but
-//! listens to nothing until it's opened.
+//! placed at the screen's centre or at the pointer. The history is on the left and the
+//! chosen item in full on the right, with its buttons; its actions, an action's
+//! result, the snippet editor and the shortcuts open in place of that preview. A click
+//! beside the card closes it. Typing searches; arrows move; Enter pastes. It stays in
+//! memory while hidden but listens to nothing until it's opened.
 
 use crate::{client, thumbs};
 use gtk::prelude::*;
@@ -9,18 +11,21 @@ use gtk::{gdk, gio, glib};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use nyx_clipboard_core::actions::{Action, Group, Outcome};
 use nyx_clipboard_core::model::{CodeInfo, Detail, Entry, Kind, Status, Transient};
+use nyx_clipboard_core::now;
 use nyx_clipboard_core::prefs::{Position, Settings};
 use nyx_clipboard_core::query::{Search, View};
-use nyx_clipboard_core::snippet::Snippet;
-use nyx_clipboard_core::now;
+use nyx_clipboard_core::snippet::{Snippet, local};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
-pub const WIDTH: i32 = 560;
-const MAX_LIST: i32 = 480;
+pub const WIDTH: i32 = 860;
+const HEIGHT: i32 = 560;
+const LIST_WIDTH: i32 = 380;
 const PAGE: u32 = 50;
+/// The most of an item's text the preview lays out.
+const PREVIEW_CHARS: usize = 20_000;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tab {
@@ -40,6 +45,30 @@ impl Tab {
     }
 }
 
+/// The kind chips under the search field.
+const KINDS: [(Option<Kind>, &str); 6] = [
+    (None, "All"),
+    (Some(Kind::Text), "Text"),
+    (Some(Kind::Url), "Links"),
+    (Some(Kind::Image), "Images"),
+    (Some(Kind::Files), "Files"),
+    (Some(Kind::Code), "Code"),
+];
+
+/// The actions pane's groups, in the order they're laid out (alternating columns).
+const HEADINGS: [&str; 6] = ["Change it", "Send to", "Assistant, on this computer", "Keep", "Paste and copy", "From other apps"];
+
+fn heading(g: Group) -> &'static str {
+    match g {
+        Group::Transform | Group::Convert => HEADINGS[0],
+        Group::Send => HEADINGS[1],
+        Group::Assistant => HEADINGS[2],
+        Group::Organize => HEADINGS[3],
+        Group::Paste => HEADINGS[4],
+        Group::Apps => HEADINGS[5],
+    }
+}
+
 /// What a list row stands for.
 #[derive(Clone)]
 enum Item {
@@ -54,19 +83,58 @@ struct Result {
     text: String,
 }
 
+/// The chosen item in full, beside the list.
+struct Preview {
+    icon: gtk::Image,
+    meta: gtk::Label,
+    scroll: gtk::ScrolledWindow,
+    body: gtk::Box,
+    picture_box: gtk::ScrolledWindow,
+    picture: gtk::Picture,
+    facts: gtk::Grid,
+    bar: gtk::Box,
+    paste_label: gtk::Label,
+    plain: gtk::Button,
+    plain_label: gtk::Label,
+    pin: gtk::Button,
+    favorite: gtk::Button,
+    edit: gtk::Button,
+    actions: gtk::Button,
+    actions_label: gtk::Label,
+    /// A code's or a secret's countdown, and when it ends.
+    left: RefCell<Option<(gtk::Label, f64)>>,
+}
+
+/// The chosen item's actions, in place of the preview: grouped, and filtered as you type.
+struct Pane {
+    field: gtk::SearchEntry,
+    about: gtk::Label,
+    scroll: gtk::ScrolledWindow,
+    columns: [gtk::Box; 2],
+    /// In keyboard order: the left column, then the right.
+    items: RefCell<Vec<(Action, gtk::Button)>>,
+    selected: Cell<Option<usize>>,
+    subject: RefCell<Option<Item>>,
+}
+
 pub struct Popup {
     window: gtk::Window,
     card: gtk::Box,
     search: gtk::SearchEntry,
-    tabs: Vec<(Tab, gtk::ToggleButton)>,
+    tabs: Vec<(Tab, gtk::ToggleButton, gtk::Label)>,
     private: gtk::ToggleButton,
+    kinds_row: gtk::Box,
+    kinds: Vec<(Option<Kind>, gtk::ToggleButton)>,
     banner: gtk::Label,
-    stack: gtk::Stack,
+    list_side: gtk::Box,
+    side: gtk::Stack,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     empty: gtk::Label,
     hint: gtk::Label,
     toast: gtk::Label,
+    preview: Preview,
+    pane: Pane,
     result_title: gtk::Label,
     result_text: gtk::TextView,
     result_buttons: gtk::Box,
@@ -75,6 +143,7 @@ pub struct Popup {
     target_title: gtk::Label,
     target: gtk::Entry,
     tab: Cell<Tab>,
+    kind: Cell<Option<Kind>>,
     items: RefCell<Vec<Item>>,
     marked: RefCell<Vec<i64>>,
     details: RefCell<HashMap<i64, Detail>>,
@@ -83,6 +152,7 @@ pub struct Popup {
     loading: Cell<bool>,
     generation: Cell<u64>,
     only: Option<String>,
+    narrow: Cell<bool>,
     listening: RefCell<Vec<gio::SignalSubscription>>,
     ticker: RefCell<Option<glib::SourceId>>,
     toast_timer: RefCell<Option<glib::SourceId>>,
@@ -109,6 +179,36 @@ fn label(text: &str, class: &str) -> gtk::Label {
     l
 }
 
+fn icon(name: &str, px: i32) -> gtk::Image {
+    let i = gtk::Image::from_icon_name(name);
+    i.set_pixel_size(px);
+    i
+}
+
+/// A button with an icon before its label.
+fn icon_button(icon_name: &str, text: &str) -> (gtk::Button, gtk::Label) {
+    let b = gtk::Button::new();
+    let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bx.append(&icon(icon_name, 14));
+    let l = gtk::Label::new(Some(text));
+    bx.append(&l);
+    b.set_child(Some(&bx));
+    b.set_focus_on_click(false);
+    (b, l)
+}
+
+fn clear_grid(g: &gtk::Grid) {
+    while let Some(c) = g.first_child() {
+        g.remove(&c);
+    }
+}
+
+fn clear_box(b: &gtk::Box) {
+    while let Some(c) = b.first_child() {
+        b.remove(&c);
+    }
+}
+
 fn ago(ts: f64) -> String {
     let s = (now() - ts).max(0.0);
     if s < 60.0 {
@@ -118,8 +218,67 @@ fn ago(ts: f64) -> String {
     } else if s < 86_400.0 {
         format!("{} h", (s / 3600.0) as i64)
     } else {
-        nyx_clipboard_core::snippet::local(ts, "%b %-d")
+        local(ts, "%b %-d")
     }
+}
+
+/// "4 min ago", "just now", "on Nov 2".
+fn since(ts: f64) -> String {
+    match ago(ts) {
+        a if a == "now" => "just now".into(),
+        a if (now() - ts) < 86_400.0 => format!("{a} ago"),
+        a => format!("on {a}"),
+    }
+}
+
+/// "Today", "Yesterday", a weekday this week, else the date.
+fn day(ts: f64) -> String {
+    let d = local(ts, "%Y-%m-%d");
+    let t = now();
+    if d == local(t, "%Y-%m-%d") {
+        "Today".into()
+    } else if d == local(t - 86_400.0, "%Y-%m-%d") {
+        "Yesterday".into()
+    } else if t - ts < 6.0 * 86_400.0 {
+        local(ts, "%A")
+    } else {
+        local(ts, "%B %-d")
+    }
+}
+
+fn when(ts: f64) -> String {
+    let time = local(ts, "%H:%M");
+    match day(ts).as_str() {
+        "Today" => format!("today at {time}"),
+        "Yesterday" => format!("yesterday at {time}"),
+        d => format!("{d} at {time}"),
+    }
+}
+
+fn capitalized(s: &str) -> String {
+    let mut c = s.chars();
+    match c.next() {
+        Some(f) => f.to_uppercase().chain(c).collect(),
+        None => String::new(),
+    }
+}
+
+/// A window class as a name: `org.mozilla.firefox` → Firefox.
+fn app_name(class: &str) -> String {
+    capitalized(&class.rsplit('.').next().unwrap_or(class).replace(['-', '_'], " "))
+}
+
+/// 1284 → "1,284".
+fn count(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn left(expires: f64) -> String {
@@ -133,6 +292,139 @@ fn size(bytes: u64) -> String {
         b if b < 1024 * 1024 => format!("{:.1} KB", b as f64 / 1024.0),
         b => format!("{:.1} MB", b as f64 / 1_048_576.0),
     }
+}
+
+/// A code in readable groups: 483920 → "483 920".
+fn spaced(code: &str) -> String {
+    let n = code.chars().count();
+    if !code.chars().all(|c| c.is_ascii_digit()) || !(6..=8).contains(&n) {
+        return code.to_string();
+    }
+    let half = n.div_ceil(2);
+    format!("{} {}", &code[..half], &code[half..])
+}
+
+fn code_from(c: &CodeInfo) -> String {
+    if c.sites.is_empty() { c.app.clone() } else { format!("{} · {}", c.app, c.sites.join(", ")) }
+}
+
+/// `name` if the icon theme has it, else `fallback`.
+fn themed(name: &str, fallback: &str) -> String {
+    let has = gdk::Display::default().is_some_and(|d| gtk::IconTheme::for_display(&d).has_icon(name));
+    if has { name } else { fallback }.to_string()
+}
+
+fn kind_icon(kind: Kind) -> String {
+    let name = match kind {
+        Kind::Text | Kind::Markdown => "format-justify-left-symbolic",
+        Kind::Url => "insert-link-symbolic",
+        Kind::Code => "utilities-terminal-symbolic",
+        Kind::Files => "folder-documents-symbolic",
+        Kind::Rich | Kind::Html => "format-text-rich-symbolic",
+        Kind::Image => "image-x-generic-symbolic",
+    };
+    themed(name, kind.icon())
+}
+
+/// For an action whose own icon the theme lacks.
+fn group_icon(g: Group) -> &'static str {
+    match g {
+        Group::Transform | Group::Convert => "format-justify-left-symbolic",
+        Group::Send => "send-to-symbolic",
+        Group::Assistant => "applications-science-symbolic",
+        Group::Organize => "view-pin-symbolic",
+        Group::Paste => "edit-copy-symbolic",
+        Group::Apps => "application-x-addon-symbolic",
+    }
+}
+
+/// The glyph colour for a kind (a theme swatch), none for plain text.
+fn tint(kind: Kind) -> Option<&'static str> {
+    match kind {
+        Kind::Url => Some("swatch-blue"),
+        Kind::Code => Some("swatch-violet"),
+        Kind::Files => Some("swatch-amber"),
+        Kind::Rich | Kind::Html | Kind::Markdown => Some("swatch-teal"),
+        _ => None,
+    }
+}
+
+/// The line over the preview: "Text · copied from Signal · 4 min ago · 92 characters".
+fn about(e: &Entry) -> String {
+    let mut parts = vec![e.kind.label().to_string()];
+    if let Some(a) = &e.app {
+        parts.push(format!("copied from {}", app_name(a)));
+    }
+    parts.push(since(e.last_used));
+    match e.kind {
+        Kind::Image => {
+            if let Some((w, h)) = e.dims {
+                parts.push(format!("{w} × {h}"));
+            }
+            parts.push(size(e.size));
+        }
+        Kind::Files => {}
+        _ => parts.push(format!("{} characters", count(e.chars))),
+    }
+    parts.join(" · ")
+}
+
+fn copied(e: &Entry) -> String {
+    match e.uses {
+        0 | 1 => capitalized(&when(e.created)),
+        2 => format!("Twice, last {}", when(e.last_used)),
+        n => format!("{n} times, last {}", when(e.last_used)),
+    }
+}
+
+fn pastes_as(e: &Entry) -> String {
+    let formatted = e.mimes.iter().any(|m| m == "text/html" || m == "text/rtf");
+    match e.kind {
+        Kind::Image => {
+            let ty = e.mimes.iter().find_map(|m| m.strip_prefix("image/")).unwrap_or("png").to_uppercase();
+            format!("An image ({ty})")
+        }
+        Kind::Files => "The files, or their paths as text".into(),
+        Kind::Rich | Kind::Html => "Formatted text, or plain text".into(),
+        _ if formatted => "Formatted text, or plain text".into(),
+        _ => "Plain text".into(),
+    }
+}
+
+/// Whether an action's label matches what was typed: a word starting with it.
+fn matches(label: &str, q: &str) -> bool {
+    if q.is_empty() {
+        return true;
+    }
+    let l = label.to_lowercase();
+    l.split(|c: char| !c.is_alphanumeric()).any(|w| w.starts_with(q)) || (q.chars().count() >= 3 && l.contains(q))
+}
+
+/// A countdown ring for a code: how much of its time is left.
+fn ring(received: f64, expires: f64) -> gtk::DrawingArea {
+    let d = gtk::DrawingArea::new();
+    d.set_content_width(26);
+    d.set_content_height(26);
+    d.set_valign(gtk::Align::Center);
+    d.set_widget_name("ring");
+    d.add_css_class("cb-ring");
+    d.set_draw_func(move |area, cr, w, h| {
+        let span = (expires - received).max(1.0);
+        let frac = ((expires - now()) / span).clamp(0.0, 1.0);
+        let c = area.color();
+        let (r, g, b) = (f64::from(c.red()), f64::from(c.green()), f64::from(c.blue()));
+        let (cx, cy) = (f64::from(w) / 2.0, f64::from(h) / 2.0);
+        let radius = cx.min(cy) - 3.0;
+        cr.set_line_width(4.0);
+        cr.set_source_rgba(r, g, b, 0.18);
+        cr.arc(cx, cy, radius, 0.0, std::f64::consts::TAU);
+        let _ = cr.stroke();
+        cr.set_source_rgba(r, g, b, 1.0);
+        let start = -std::f64::consts::FRAC_PI_2;
+        cr.arc(cx, cy, radius, start, start + std::f64::consts::TAU * frac);
+        let _ = cr.stroke();
+    });
+    d
 }
 
 fn focused_monitor() -> Option<gdk::Monitor> {
@@ -164,15 +456,16 @@ const SHORTCUTS: &[(&str, &str)] = &[
     ("Paste", "Enter"),
     ("Paste as plain text", "Shift + Enter"),
     ("Paste the first nine", "Alt + 1 … 9"),
-    ("Mark for pasting together", "Ctrl + Space"),
+    ("Pick several to paste together", "Ctrl + Space"),
     ("Copy without pasting", "Ctrl + C"),
-    ("Actions", "Menu · Shift + F10 · right-click"),
+    ("Actions", "Ctrl + Enter · Menu · Shift + F10 · right-click"),
     ("Pin or unpin", "Ctrl + P"),
     ("Add to favorites", "Ctrl + S"),
     ("Delete", "Ctrl + Delete"),
     ("Recent · Pinned · Snippets", "Tab · Ctrl + 1 2 3"),
     ("New snippet · Edit snippet", "Ctrl + N · Ctrl + E"),
     ("Private mode", "Ctrl + Shift + P"),
+    ("Clipboard's settings", "Ctrl + ,"),
     ("Filter by kind", "img: url: file: code: text: fav:"),
     ("Close", "Esc"),
 ];
@@ -204,32 +497,48 @@ impl Popup {
             self.hide();
         } else {
             self.show();
-            self.set_tab(tab);
+            if self.is_open() {
+                self.set_tab(tab);
+            }
         }
     }
 
-    fn place(&self) {
+    /// Put the card on its screen, sized to fit. A test copy (`--only`) whose output
+    /// isn't there doesn't open at all: the compositor would pick a screen itself.
+    fn place(&self) -> bool {
         let settings = Settings::load();
         let monitor = match &self.only {
-            Some(name) => monitor_named(name),
+            Some(name) => match monitor_named(name) {
+                Some(m) => Some(m),
+                None => {
+                    eprintln!("nyx-clipboard: there's no output named {name}");
+                    return false;
+                }
+            },
             None => focused_monitor(),
         };
         self.window.set_monitor(monitor.as_ref());
-        self.card.set_margin_start(0);
-        self.card.set_margin_top(0);
+        let (mw, mh) = monitor.as_ref().map(|m| (m.geometry().width(), m.geometry().height())).unwrap_or((1280, 800));
+        let width = WIDTH.min(mw - 24).max(360);
+        let height = HEIGHT.min(mh - 24).max(320);
+        self.card.set_size_request(width, height);
+        // On a small screen the list narrows and the preview's buttons get shorter labels.
+        let narrow = width < 820;
+        self.narrow.set(narrow);
+        self.list_side.set_size_request(if narrow { width * 7 / 20 } else { LIST_WIDTH }, -1);
+        self.preview.actions_label.set_visible(!narrow);
         let at_pointer = settings.position == Position::Cursor && self.only.is_none();
-        match pointer().filter(|_| at_pointer) {
-            Some(((x, y), (w, h))) => {
-                self.card.set_halign(gtk::Align::Start);
-                self.card.set_valign(gtk::Align::Start);
-                self.card.set_margin_start((x - 24).clamp(8, (w - WIDTH - 8).max(8)));
-                self.card.set_margin_top((y + 12).clamp(8, (h - 620).max(8)));
-            }
-            None => {
-                self.card.set_halign(gtk::Align::Center);
-                self.card.set_valign(gtk::Align::Center);
-            }
-        }
+        let (left, top) = match pointer().filter(|_| at_pointer) {
+            Some(((x, y), (w, h))) => ((x - 24).clamp(8, (w - width - 8).max(8)), (y + 12).clamp(8, (h - height - 8).max(8))),
+            None => ((mw - width) / 2, (mh - height) / 2),
+        };
+        // Margins on every side fix the card's size: centred, it would take its content's
+        // natural width (a long line in a hidden page) and grow.
+        self.card.set_margin_start(left);
+        self.card.set_margin_end((mw - left - width).max(0));
+        self.card.set_margin_top(top);
+        self.card.set_margin_bottom((mh - top - height).max(0));
+        true
     }
 
     pub fn show(&self) {
@@ -237,9 +546,12 @@ impl Popup {
             self.focus_search();
             return;
         }
-        self.place();
-        self.stack.set_visible_child_name("list");
+        if !self.place() {
+            return;
+        }
+        self.side.set_visible_child_name("preview");
         self.set_tab_quiet(Tab::Recent);
+        self.set_kind_quiet(None);
         self.search.set_text("");
         self.marked.borrow_mut().clear();
         self.details.borrow_mut().clear();
@@ -253,23 +565,30 @@ impl Popup {
             glib::ControlFlow::Continue
         }));
         self.refresh(true);
-        // For trying it on a test output: NYX_CLIPBOARD_TEST_VIEW=pinned|snippets|help|actions|editor.
+        // For trying it on a test output: NYX_CLIPBOARD_TEST_VIEW, steps separated by
+        // commas, such as `down,actions,type:tr` (pinned, snippets, help, actions,
+        // editor, images, down, type:TEXT, search:TEXT).
         if self.only.is_some()
             && let Ok(view) = std::env::var("NYX_CLIPBOARD_TEST_VIEW")
         {
-            let w = self.weak();
-            glib::timeout_add_local_once(Duration::from_millis(700), move || {
-                let Some(p) = w.upgrade() else { return };
-                match view.as_str() {
-                    "pinned" => p.set_tab(Tab::Pinned),
-                    "snippets" => p.set_tab(Tab::Snippets),
-                    "help" => p.show_help(),
-                    "actions" => p.open_actions(None),
-                    "editor" => p.edit_snippet(None),
-                    "images" => p.search.set_text("img: "),
-                    _ => {}
-                }
-            });
+            for (i, step) in view.split(',').map(str::to_string).enumerate() {
+                let w = self.weak();
+                glib::timeout_add_local_once(Duration::from_millis(700 + 500 * i as u64), move || {
+                    let Some(p) = w.upgrade() else { return };
+                    match step.as_str() {
+                        "pinned" => p.set_tab(Tab::Pinned),
+                        "snippets" => p.set_tab(Tab::Snippets),
+                        "help" => p.show_help(),
+                        "actions" => p.open_actions(),
+                        "editor" => p.edit_snippet(None),
+                        "images" => p.set_kind(Some(Kind::Image)),
+                        "down" => p.move_by(1),
+                        s if s.starts_with("type:") => p.pane.field.set_text(&s["type:".len()..]),
+                        s if s.starts_with("search:") => p.search.set_text(&s["search:".len()..]),
+                        _ => {}
+                    }
+                });
+            }
         }
     }
 
@@ -285,10 +604,13 @@ impl Popup {
         self.disarm();
         self.result.borrow_mut().take();
         self.result_text.buffer().set_text("");
+        self.pane.subject.borrow_mut().take();
+        self.pane.items.borrow_mut().clear();
         self.items.borrow_mut().clear();
         while let Some(c) = self.list.first_child() {
             self.list.remove(&c);
         }
+        self.show_preview();
     }
 
     fn toast(&self, text: &str, danger: bool) {
@@ -316,23 +638,25 @@ impl Popup {
     fn update_hint(&self) {
         let marked = self.marked.borrow().len();
         let text = if marked > 0 {
-            format!("{marked} marked · ↵ pastes them together · Ctrl+Space unmarks")
+            format!("{marked} picked · ↵ pastes them together · Ctrl Space unpicks")
         } else if self.tab.get() == Tab::Snippets {
-            "↵ Paste · Ctrl+N New · Ctrl+E Edit · Menu Actions · F1 Keys".to_string()
+            "↑ ↓ move · Ctrl N new snippet · Ctrl E edit · F1 every key".to_string()
         } else {
-            "↵ Paste · ⇧↵ Plain · Ctrl+P Pin · Menu Actions · F1 Keys".to_string()
+            "↑ ↓ move · Ctrl Space picks several · F1 every key".to_string()
         };
         self.hint.set_text(&text);
     }
 
     fn set_tab_quiet(&self, tab: Tab) {
         self.tab.set(tab);
-        for (t, b) in &self.tabs {
+        for (t, b, _) in &self.tabs {
             b.set_active(*t == tab);
         }
+        self.kinds_row.set_visible(tab != Tab::Snippets);
         self.search.set_placeholder_text(Some(match tab {
             Tab::Snippets => "Search snippets",
-            _ => "Search the clipboard",
+            Tab::Pinned => "Search what you pinned",
+            Tab::Recent => "Search everything you copied",
         }));
     }
 
@@ -342,7 +666,7 @@ impl Popup {
         }
         self.set_tab_quiet(tab);
         self.marked.borrow_mut().clear();
-        self.stack.set_visible_child_name("list");
+        self.side.set_visible_child_name("preview");
         self.refresh(true);
         self.focus_search();
     }
@@ -354,6 +678,23 @@ impl Popup {
         self.set_tab(order[next]);
     }
 
+    fn set_kind_quiet(&self, kind: Option<Kind>) {
+        self.kind.set(kind);
+        for (k, b) in &self.kinds {
+            b.set_active(*k == kind);
+        }
+    }
+
+    fn set_kind(&self, kind: Option<Kind>) {
+        if self.kind.get() == kind {
+            return;
+        }
+        self.set_kind_quiet(kind);
+        self.marked.borrow_mut().clear();
+        self.refresh(true);
+        self.focus_search();
+    }
+
     fn queue_refresh(&self) {
         if self.pending_refresh.replace(true) {
             return;
@@ -362,11 +703,16 @@ impl Popup {
         glib::timeout_add_local_once(Duration::from_millis(120), move || {
             if let Some(p) = w.upgrade() {
                 p.pending_refresh.set(false);
-                if p.is_open() && p.stack.visible_child_name().as_deref() == Some("list") {
+                if p.is_open() && p.side.visible_child_name().as_deref() == Some("preview") {
                     p.refresh(false);
                 }
             }
         });
+    }
+
+    fn search_for(&self, offset: u32) -> Search {
+        let view = if self.tab.get() == Tab::Pinned { View::Pinned } else { View::Recent };
+        Search { text: self.search.text().to_string(), view, offset, limit: PAGE, kind: self.kind.get() }
     }
 
     /// Read again from the start. `reset` moves the selection to the top.
@@ -376,24 +722,20 @@ impl Popup {
         self.offset.set(0);
         self.exhausted.set(false);
         let keep = if reset { None } else { self.selected_key() };
-        let text = self.search.text().to_string();
         let tab = self.tab.get();
+        let query = self.search_for(0);
+        let everything = tab == Tab::Recent && query.text.is_empty() && query.kind.is_none();
         let w = self.weak();
         act(async move {
             let status = client::status().await;
-            let (codes, secrets) = if tab == Tab::Recent && text.is_empty() {
+            let (codes, secrets) = if everything {
                 (client::codes().await.unwrap_or_default(), client::transient().await.unwrap_or_default())
             } else {
                 (Vec::new(), Vec::new())
             };
             let rows: std::result::Result<Vec<Item>, String> = match tab {
-                Tab::Snippets => client::snippets(&text).await.map(|v| v.into_iter().map(Item::Snippet).collect()),
-                _ => {
-                    let view = if tab == Tab::Pinned { View::Pinned } else { View::Recent };
-                    client::search(&Search { text: text.clone(), view, offset: 0, limit: PAGE, kind: None })
-                        .await
-                        .map(|v| v.into_iter().map(Item::Entry).collect())
-                }
+                Tab::Snippets => client::snippets(&query.text).await.map(|v| v.into_iter().map(Item::Snippet).collect()),
+                _ => client::search(&query).await.map(|v| v.into_iter().map(Item::Entry).collect()),
             };
             let Some(p) = w.upgrade() else { return };
             if p.generation.get() != generation {
@@ -404,6 +746,13 @@ impl Popup {
                     *p.status.borrow_mut() = s.clone();
                     p.private.set_active(s.private);
                     p.show_banner(s);
+                    for (t, _, n) in &p.tabs {
+                        n.set_text(&count(match t {
+                            Tab::Recent => s.entries,
+                            Tab::Pinned => s.pinned,
+                            Tab::Snippets => s.snippets,
+                        }));
+                    }
                 }
                 Err(e) => {
                     p.banner.set_text(e);
@@ -428,7 +777,9 @@ impl Popup {
 
     fn show_banner(&self, s: &Status) {
         self.banner.remove_css_class("danger");
-        if !s.watching {
+        // A test copy's scratch service has no compositor to watch, on purpose.
+        let expected = self.only.is_some() && std::env::var_os("NYX_CLIPBOARD_TEST_UNWATCHED").is_some();
+        if !s.watching && !expected {
             self.banner.set_text(&format!(
                 "The clipboard isn't being watched{}",
                 s.problem.as_deref().map(|p| format!(": {p}")).unwrap_or_default()
@@ -436,7 +787,7 @@ impl Popup {
             self.banner.add_css_class("danger");
             self.banner.set_visible(true);
         } else if s.private {
-            self.banner.set_text("Private mode: nothing new is saved");
+            self.banner.set_text("Private mode: nothing new is saved until you turn it off");
             self.banner.set_visible(true);
         } else {
             self.banner.set_visible(false);
@@ -449,12 +800,11 @@ impl Popup {
         }
         self.loading.set(true);
         let generation = self.generation.get();
-        let text = self.search.text().to_string();
-        let view = if self.tab.get() == Tab::Pinned { View::Pinned } else { View::Recent };
         let offset = self.offset.get();
+        let query = self.search_for(offset);
         let w = self.weak();
         act(async move {
-            let rows = client::search(&Search { text, view, offset, limit: PAGE, kind: None }).await.unwrap_or_default();
+            let rows = client::search(&query).await.unwrap_or_default();
             let Some(p) = w.upgrade() else { return };
             p.loading.set(false);
             if p.generation.get() != generation {
@@ -497,6 +847,10 @@ impl Popup {
         while let Some(c) = self.list.first_child() {
             self.list.remove(&c);
         }
+        let select = keep.and_then(|k| items.iter().position(|i| Self::key_of(i) == k)).unwrap_or(0);
+        let none = items.is_empty();
+        // Set first: the day headers read it as rows are added.
+        *self.items.borrow_mut() = items.clone();
         let mut n = 0;
         for item in &items {
             let numbered = matches!(item, Item::Entry(_) | Item::Snippet(_));
@@ -504,19 +858,18 @@ impl Popup {
             let row = self.row(item, if numbered { n } else { 0 });
             self.list.append(&row);
         }
-        let select = keep.and_then(|k| items.iter().position(|i| Self::key_of(i) == k)).unwrap_or(0);
-        let none = items.is_empty();
-        *self.items.borrow_mut() = items;
         self.empty.set_visible(none);
         self.scroller.set_visible(!none);
-        self.empty.set_text(match (self.tab.get(), self.search.text().is_empty()) {
-            (_, false) => "Nothing matches",
-            (Tab::Recent, true) => "Nothing copied yet. Copy something and it shows up here.",
-            (Tab::Pinned, true) => "No pinned items. Ctrl + P pins the selected item.",
-            (Tab::Snippets, true) => "No snippets. Ctrl + N adds one; Save as snippet in an item's actions makes one from it.",
+        let filtered = !self.search.text().is_empty() || self.kind.get().is_some();
+        self.empty.set_text(match (self.tab.get(), filtered) {
+            (_, true) => "Nothing matches",
+            (Tab::Recent, false) => "Nothing copied yet. Copy something and it shows up here.",
+            (Tab::Pinned, false) => "No pinned items. Ctrl + P pins the chosen item, and pinned items always stay.",
+            (Tab::Snippets, false) => "No snippets. Ctrl + N adds one; Save as a snippet in an item's actions makes one from it.",
         });
-        if let Some(r) = self.list.row_at_index(select as i32) {
-            self.list.select_row(Some(&r));
+        match self.list.row_at_index(select as i32) {
+            Some(r) => self.list.select_row(Some(&r)),
+            None => self.show_preview(),
         }
         self.update_hint();
     }
@@ -524,41 +877,49 @@ impl Popup {
     /// A list row; `n` (1–9) labels it with its Alt + n key.
     fn row(&self, item: &Item, n: usize) -> gtk::ListBoxRow {
         let row = gtk::ListBoxRow::new();
+        if let Item::Code(c) = item {
+            row.add_css_class("cb-code-card");
+            row.set_child(Some(&self.code_card(c)));
+            row.update_property(&[gtk::accessible::Property::Label(&format!("Verification code from {}", code_from(c)))]);
+            return row;
+        }
         row.add_css_class("cb-row");
         let b = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let glyph = gtk::Box::new(gtk::Orientation::Vertical, 0);
         glyph.add_css_class("cb-glyph");
         glyph.set_size_request(32, 32);
         glyph.set_valign(gtk::Align::Center);
-        let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
         text.set_hexpand(true);
         text.set_valign(gtk::Align::Center);
-        let (title, meta, icon, accent) = match item {
-            Item::Code(c) => {
-                row.add_css_class("cb-code");
-                let from = if c.sites.is_empty() { c.app.clone() } else { format!("{} · {}", c.app, c.sites.join(", ")) };
-                (c.code.clone(), format!("Verification code · {from} · {}", left(c.expires)), "dialog-password-symbolic", true)
-            }
+        let (title, meta, icon_name, tinted) = match item {
+            Item::Code(_) => unreachable!(),
             Item::Secret(s) => {
                 row.add_css_class("cb-secret");
-                (format!("{} (not saved)", s.label), format!("Kept in memory · {}", left(s.expires)), "security-high-symbolic", false)
+                (format!("{} (not saved)", s.label), format!("Kept in memory · {}", left(s.expires)), "security-high-symbolic".to_string(), None)
             }
             Item::Entry(e) => {
                 let mut parts = vec![e.kind.label().to_string()];
                 if let Some(a) = &e.app {
-                    parts.push(a.rsplit('.').next().unwrap_or(a).to_string());
+                    parts.push(app_name(a));
                 }
                 parts.push(ago(e.last_used));
                 if e.kind == Kind::Image || e.size > 4096 {
                     parts.push(size(e.size));
                 }
-                (e.preview.clone(), parts.join(" · "), e.kind.icon(), false)
+                (e.preview.clone(), parts.join(" · "), kind_icon(e.kind), tint(e.kind))
             }
-            Item::Snippet(s) => (s.name.clone(), nyx_clipboard_core::classify::preview(&s.body), "insert-text-symbolic", false),
+            Item::Snippet(s) => (
+                s.name.clone(),
+                nyx_clipboard_core::classify::preview(&s.body),
+                "insert-text-symbolic".to_string(),
+                Some("swatch-green"),
+            ),
         };
         if let Item::Entry(e) = item
             && let Some(img) = &e.image
         {
+            glyph.add_css_class("image");
             let pic = gtk::Image::new();
             pic.set_pixel_size(32);
             pic.set_vexpand(true);
@@ -566,18 +927,18 @@ impl Popup {
             thumbs::load_icon(&pic, img, 64);
             glyph.append(&pic);
         } else {
-            let i = gtk::Image::from_icon_name(icon);
-            i.set_pixel_size(16);
+            let i = icon(&icon_name, 16);
             i.set_vexpand(true);
-            if accent {
-                i.add_css_class("accent");
-            }
             glyph.append(&i);
+            if let Some(t) = tinted {
+                glyph.add_css_class("tinted");
+                glyph.add_css_class(&format!("section-{t}"));
+            }
         }
         b.append(&glyph);
         let t = label(&title, "cb-title");
-        if matches!(item, Item::Code(_)) {
-            t.add_css_class("cb-code-text");
+        if matches!(item, Item::Entry(e) if e.kind == Kind::Code) {
+            t.add_css_class("mono");
         }
         text.append(&t);
         let m = label(&meta, "cb-meta");
@@ -587,88 +948,285 @@ impl Popup {
         if let Item::Entry(e) = item {
             if self.marked.borrow().contains(&e.id) {
                 row.add_css_class("marked");
-                let check = gtk::Image::from_icon_name("object-select-symbolic");
+                let check = icon("object-select-symbolic", 14);
                 check.add_css_class("accent");
                 b.append(&check);
             }
             if e.favorite {
-                let s = gtk::Image::from_icon_name("starred-symbolic");
+                let s = icon("starred-symbolic", 13);
                 s.add_css_class("cb-mark");
+                s.add_css_class("star");
                 s.set_tooltip_text(Some("Favorite"));
                 b.append(&s);
             }
             if e.pinned {
-                let s = gtk::Image::from_icon_name("view-pin-symbolic");
+                let s = icon("view-pin-symbolic", 13);
                 s.add_css_class("cb-mark");
                 s.set_tooltip_text(Some("Pinned"));
                 b.append(&s);
             }
         }
         if (1..=9).contains(&n) {
-            let k = label(&format!("Alt {n}"), "cb-key");
-            k.set_hexpand(false);
-            k.set_max_width_chars(-1);
+            let k = gtk::Label::new(Some(&format!("Alt {n}")));
+            k.add_css_class("cb-key");
             k.set_valign(gtk::Align::Center);
             b.append(&k);
         }
         row.set_child(Some(&b));
         row.update_property(&[gtk::accessible::Property::Label(&format!("{title}. {meta}"))]);
-        // Hover previews: the whole text or a larger image, fetched when first wanted.
-        if let Item::Entry(e) = item {
-            row.set_has_tooltip(true);
-            let id = e.id;
-            let image = e.image.clone();
-            let w = self.weak();
-            row.connect_query_tooltip(move |row, _, _, _, tip| {
-                let Some(p) = w.upgrade() else { return false };
-                if let Some(img) = &image {
-                    let pic = gtk::Picture::new();
-                    pic.set_size_request(320, 220);
-                    pic.set_content_fit(gtk::ContentFit::Contain);
-                    thumbs::load(&pic, img, 360);
-                    tip.set_custom(Some(&pic));
-                    return true;
-                }
-                if let Some(d) = p.details.borrow().get(&id) {
-                    let mut t: String = d.text.chars().take(1500).collect();
-                    if d.text.chars().count() > 1500 || d.truncated {
-                        t.push_str("\n…");
-                    }
-                    let l = gtk::Label::new(Some(&t));
-                    l.set_wrap(true);
-                    l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-                    l.set_max_width_chars(70);
-                    l.set_xalign(0.0);
-                    l.add_css_class("cb-preview");
-                    tip.set_custom(Some(&l));
-                    return true;
-                }
-                let w2 = p.weak();
-                let row = row.clone();
-                act(async move {
-                    if let Ok(d) = client::detail(id).await
-                        && let Some(p) = w2.upgrade()
-                    {
-                        p.details.borrow_mut().insert(id, d);
-                        row.trigger_tooltip_query();
-                    }
-                });
-                false
-            });
-        }
         let right = gtk::GestureClick::new();
         right.set_button(3);
         let w = self.weak();
         let r2 = row.clone();
-        right.connect_pressed(move |g, _, x, y| {
+        right.connect_pressed(move |g, _, _, _| {
             g.set_state(gtk::EventSequenceState::Claimed);
             if let Some(p) = w.upgrade() {
                 p.list.select_row(Some(&r2));
-                p.open_actions(Some((x, y)));
+                p.open_actions();
             }
         });
         row.add_controller(right);
         row
+    }
+
+    /// A verification code, on top of the list with its countdown and a Copy button.
+    fn code_card(&self, c: &CodeInfo) -> gtk::Box {
+        let b = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        let i = icon("dialog-password-symbolic", 20);
+        i.add_css_class("accent");
+        b.append(&i);
+        let text = gtk::Box::new(gtk::Orientation::Vertical, 1);
+        text.set_hexpand(true);
+        text.set_valign(gtk::Align::Center);
+        let code = gtk::Label::new(Some(&spaced(&c.code)));
+        code.add_css_class("cb-code-text");
+        code.set_xalign(0.0);
+        text.append(&code);
+        text.append(&label(&format!("Verification code · {}", code_from(c)), "cb-code-sub"));
+        b.append(&text);
+        b.append(&ring(c.received, c.expires));
+        let l = gtk::Label::new(Some(&left(c.expires)));
+        l.add_css_class("cb-left");
+        l.set_widget_name("left");
+        b.append(&l);
+        let (copy, copy_label) = icon_button("edit-copy-symbolic", "Copy");
+        copy_label.set_visible(!self.narrow.get());
+        copy.update_property(&[gtk::accessible::Property::Label("Copy")]);
+        copy.add_css_class("cb-code-copy");
+        copy.set_valign(gtk::Align::Center);
+        copy.set_tooltip_text(Some("Copy it without pasting (Ctrl C)"));
+        let w = self.weak();
+        let key = format!("code:{}", c.id);
+        copy.connect_clicked(move |_| {
+            let Some(p) = w.upgrade() else { return };
+            let i = p.items.borrow().iter().position(|it| Self::key_of(it) == key);
+            if let Some(i) = i {
+                p.select_index(i as i32);
+                p.copy_selected();
+            }
+        });
+        b.append(&copy);
+        b
+    }
+
+    // ---- Preview
+
+    fn show_preview(&self) {
+        let p = &self.preview;
+        p.left.borrow_mut().take();
+        clear_box(&p.body);
+        clear_grid(&p.facts);
+        p.picture.set_paintable(None::<&gdk::Paintable>);
+        p.picture_box.set_visible(false);
+        p.scroll.set_visible(true);
+        p.scroll.vadjustment().set_value(0.0);
+        let Some(item) = self.selected() else {
+            p.icon.set_visible(false);
+            p.meta.set_text("");
+            p.bar.set_visible(false);
+            return;
+        };
+        p.icon.set_visible(true);
+        p.bar.set_visible(true);
+        let marked = self.marked.borrow().len();
+        p.paste_label.set_text(&if marked > 0 && self.tab.get() != Tab::Snippets {
+            format!("Paste {marked} together")
+        } else {
+            "Paste".to_string()
+        });
+        let mut facts: Vec<(&str, String)> = Vec::new();
+        let mut countdown: Option<f64> = None;
+        match &item {
+            Item::Entry(e) => {
+                p.icon.set_icon_name(Some(&kind_icon(e.kind)));
+                p.meta.set_text(&about(e));
+                let detail = self.details.borrow().get(&e.id).cloned();
+                if detail.is_none() {
+                    self.fetch_detail(e.id);
+                }
+                self.preview_body(e, detail.as_ref());
+                if let Some(a) = &e.app {
+                    facts.push(("From", app_name(a)));
+                }
+                facts.push(("Copied", copied(e)));
+                facts.push(("Pastes as", pastes_as(e)));
+                if e.kind == Kind::Image {
+                    facts.push(("Size", size(e.size)));
+                }
+                p.plain.set_visible(e.kind.has_text());
+                p.plain_label.set_text(if self.narrow.get() { "Plain text" } else { "Paste as plain text" });
+                p.pin.set_visible(true);
+                p.favorite.set_visible(true);
+                p.edit.set_visible(false);
+                p.actions.set_visible(true);
+                let pin = if e.pinned { "Unpin (Ctrl P)" } else { "Pin (Ctrl P)" };
+                p.pin.set_tooltip_text(Some(pin));
+                p.pin.update_property(&[gtk::accessible::Property::Label(pin)]);
+                if e.pinned { p.pin.add_css_class("on") } else { p.pin.remove_css_class("on") }
+                let fav = if e.favorite { "Remove from favorites (Ctrl S)" } else { "Favorite (Ctrl S)" };
+                p.favorite.set_icon_name(if e.favorite { "starred-symbolic" } else { "non-starred-symbolic" });
+                p.favorite.set_tooltip_text(Some(fav));
+                p.favorite.update_property(&[gtk::accessible::Property::Label(fav)]);
+                if e.favorite { p.favorite.add_css_class("on") } else { p.favorite.remove_css_class("on") }
+            }
+            Item::Code(c) => {
+                p.icon.set_icon_name(Some("dialog-password-symbolic"));
+                p.meta.set_text(&format!("Verification code · from {}", c.app));
+                let l = gtk::Label::new(Some(&spaced(&c.code)));
+                l.add_css_class("cb-pcode");
+                l.set_xalign(0.0);
+                p.body.append(&l);
+                facts.push(("From", c.app.clone()));
+                if !c.sites.is_empty() {
+                    facts.push(("For", c.sites.join(", ")));
+                }
+                facts.push(("Kept", "In memory only, never saved".into()));
+                countdown = Some(c.expires);
+                self.bar_for_copy();
+            }
+            Item::Secret(s) => {
+                p.icon.set_icon_name(Some("security-high-symbolic"));
+                p.meta.set_text(&format!("{} · not saved", s.label));
+                let l = gtk::Label::new(Some(
+                    "This looks like a password or a key, so it isn't written down. It stays here for a moment so you can still paste it.",
+                ));
+                l.add_css_class("cb-pnote");
+                l.set_wrap(true);
+                l.set_xalign(0.0);
+                p.body.append(&l);
+                countdown = Some(s.expires);
+                self.bar_for_copy();
+            }
+            Item::Snippet(s) => {
+                p.icon.set_icon_name(Some("insert-text-symbolic"));
+                p.meta.set_text(&if s.name.is_empty() { "Snippet".to_string() } else { format!("Snippet · {}", s.name) });
+                p.body.append(&self.body_text(&s.body, false));
+                let fills: Vec<&str> = ["{date}", "{time}", "{datetime}", "{weekday}", "{clipboard}"]
+                    .into_iter()
+                    .filter(|f| s.body.contains(f))
+                    .collect();
+                if !fills.is_empty() {
+                    facts.push(("Fills in", fills.join(" ")));
+                }
+                if s.updated > 0.0 {
+                    facts.push(("Changed", capitalized(&when(s.updated))));
+                }
+                self.bar_for_copy();
+                p.edit.set_visible(true);
+                p.actions.set_visible(true);
+            }
+        }
+        let mut row = 0;
+        for (k, v) in facts {
+            self.fact(row, k, &v);
+            row += 1;
+        }
+        if let Some(expires) = countdown {
+            let v = self.fact(row, "Expires in", &left(expires));
+            *p.left.borrow_mut() = Some((v, expires));
+        }
+    }
+
+    fn bar_for_copy(&self) {
+        let p = &self.preview;
+        p.plain.set_visible(true);
+        p.plain_label.set_text("Copy");
+        p.pin.set_visible(false);
+        p.favorite.set_visible(false);
+        p.edit.set_visible(false);
+        p.actions.set_visible(false);
+    }
+
+    fn fact(&self, row: i32, key: &str, value: &str) -> gtk::Label {
+        let k = gtk::Label::new(Some(key));
+        k.add_css_class("cb-fact-key");
+        k.set_xalign(0.0);
+        let v = label(value, "cb-fact");
+        self.preview.facts.attach(&k, 0, row, 1, 1);
+        self.preview.facts.attach(&v, 1, row, 1, 1);
+        v
+    }
+
+    fn body_text(&self, text: &str, mono: bool) -> gtk::Label {
+        let mut t: String = text.chars().take(PREVIEW_CHARS).collect();
+        if text.chars().nth(PREVIEW_CHARS).is_some() {
+            t.push_str("\n…");
+        }
+        let l = gtk::Label::new(Some(&t));
+        l.add_css_class("cb-pbody");
+        if mono {
+            l.add_css_class("mono");
+        }
+        l.set_wrap(true);
+        l.set_wrap_mode(gtk::pango::WrapMode::WordChar);
+        l.set_xalign(0.0);
+        l.set_yalign(0.0);
+        l.set_selectable(false);
+        l
+    }
+
+    fn preview_body(&self, e: &Entry, detail: Option<&Detail>) {
+        let p = &self.preview;
+        if let Some(img) = &e.image {
+            p.scroll.set_visible(false);
+            p.picture_box.set_visible(true);
+            thumbs::load(&p.picture, img, 720);
+            return;
+        }
+        let Some(d) = detail else {
+            p.body.append(&self.body_text(&e.preview, e.kind == Kind::Code));
+            return;
+        };
+        if e.kind == Kind::Files && !d.files.is_empty() {
+            for f in &d.files {
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                row.add_css_class("cb-file");
+                row.append(&icon("text-x-generic-symbolic", 14));
+                let l = label(f, "cb-file-path");
+                l.set_ellipsize(gtk::pango::EllipsizeMode::Middle);
+                l.set_tooltip_text(Some(f));
+                row.append(&l);
+                p.body.append(&row);
+            }
+            return;
+        }
+        let mono = matches!(e.kind, Kind::Code | Kind::Html);
+        p.body.append(&self.body_text(&d.text, mono));
+        if d.truncated {
+            p.body.append(&label("Only the start is shown; all of it pastes.", "cb-pnote"));
+        }
+    }
+
+    fn fetch_detail(&self, id: i64) {
+        let w = self.weak();
+        act(async move {
+            let Ok(d) = client::detail(id).await else { return };
+            let Some(p) = w.upgrade() else { return };
+            p.details.borrow_mut().insert(id, d);
+            if p.selected_key().as_deref() == Some(&format!("entry:{id}")) {
+                p.show_preview();
+            }
+        });
     }
 
     fn tick(&self) {
@@ -676,24 +1234,34 @@ impl Popup {
         let mut expired = false;
         let items = self.items.borrow().clone();
         for (i, item) in items.iter().enumerate() {
-            let (expires, prefix) = match item {
-                Item::Code(c) => {
-                    let from = if c.sites.is_empty() { c.app.clone() } else { format!("{} · {}", c.app, c.sites.join(", ")) };
-                    (c.expires, format!("Verification code · {from}"))
-                }
-                Item::Secret(s) => (s.expires, "Kept in memory".to_string()),
+            let expires = match item {
+                Item::Code(c) => c.expires,
+                Item::Secret(s) => s.expires,
                 _ => continue,
             };
             if expires <= t {
                 expired = true;
                 continue;
             }
-            if let Some(row) = self.list.row_at_index(i as i32)
-                && let Some(meta) = find_named(row.upcast_ref(), "meta")
-                && let Ok(l) = meta.downcast::<gtk::Label>()
-            {
-                l.set_text(&format!("{prefix} · {}", left(expires)));
+            let Some(row) = self.list.row_at_index(i as i32) else { continue };
+            match item {
+                Item::Code(_) => {
+                    if let Some(l) = find_named(row.upcast_ref(), "left").and_then(|w| w.downcast::<gtk::Label>().ok()) {
+                        l.set_text(&left(expires));
+                    }
+                    if let Some(r) = find_named(row.upcast_ref(), "ring") {
+                        r.queue_draw();
+                    }
+                }
+                _ => {
+                    if let Some(l) = find_named(row.upcast_ref(), "meta").and_then(|w| w.downcast::<gtk::Label>().ok()) {
+                        l.set_text(&format!("Kept in memory · {}", left(expires)));
+                    }
+                }
             }
+        }
+        if let Some((l, expires)) = self.preview.left.borrow().as_ref() {
+            l.set_text(&left(*expires));
         }
         if expired {
             self.refresh(false);
@@ -740,7 +1308,7 @@ impl Popup {
         self.search.set_position(-1);
     }
 
-    /// Enter: paste what's selected (or everything marked).
+    /// Enter: paste what's selected (or everything picked).
     fn activate(&self, plain: bool) {
         let marked = self.marked.borrow().clone();
         if !marked.is_empty() && self.tab.get() != Tab::Snippets {
@@ -818,7 +1386,7 @@ impl Popup {
             let r = client::set_pinned(e.id, !e.pinned).await;
             if let Some(p) = w.upgrade() {
                 match r {
-                    Ok(_) => p.toast(if e.pinned { "Unpinned" } else { "Pinned" }, false),
+                    Ok(_) => p.toast(if e.pinned { "Unpinned" } else { "Pinned: it stays until you unpin it" }, false),
                     Err(err) => p.toast(&err, true),
                 }
                 p.refresh(false);
@@ -833,7 +1401,7 @@ impl Popup {
             let r = client::set_favorite(e.id, !e.favorite).await;
             if let Some(p) = w.upgrade() {
                 match r {
-                    Ok(_) => p.toast(if e.favorite { "Removed from favorites" } else { "Added to favorites" }, false),
+                    Ok(_) => p.toast(if e.favorite { "Removed from favorites" } else { "Added to favorites (fav: finds them)" }, false),
                     Err(err) => p.toast(&err, true),
                 }
                 p.refresh(false);
@@ -885,13 +1453,7 @@ impl Popup {
             }
             Item::Snippet(s) => {
                 if self.armed(&key, "Press again to delete this snippet") {
-                    act(async move {
-                        let _ = client::delete_snippet(s.id).await;
-                        if let Some(p) = w.upgrade() {
-                            p.toast("Snippet deleted", false);
-                            p.refresh(false);
-                        }
-                    });
+                    self.forget_snippet(s.id);
                 }
             }
             Item::Secret(s) => act(async move {
@@ -909,6 +1471,17 @@ impl Popup {
         }
     }
 
+    fn forget_snippet(&self, id: i64) {
+        let w = self.weak();
+        act(async move {
+            let _ = client::delete_snippet(id).await;
+            if let Some(p) = w.upgrade() {
+                p.toast("Snippet deleted", false);
+                p.refresh(false);
+            }
+        });
+    }
+
     fn toggle_private(&self) {
         let on = !self.status.borrow().private;
         let w = self.weak();
@@ -924,6 +1497,18 @@ impl Popup {
         });
     }
 
+    /// Settings › Desktop › Clipboard in Nyx Settings.
+    fn open_settings(&self) {
+        if self.only.is_some() {
+            self.toast("A test copy doesn't open Settings", false);
+            return;
+        }
+        self.hide();
+        if let Err(e) = std::process::Command::new("nyx-settings").args(["--section", "clipboard.clipboard"]).spawn() {
+            eprintln!("nyx-clipboard: can't open Settings: {e}");
+        }
+    }
+
     // ---- Snippet editor
 
     fn edit_snippet(&self, existing: Option<Snippet>) {
@@ -931,8 +1516,8 @@ impl Popup {
         self.editing.set(s.id);
         self.editor_name.set_text(&s.name);
         self.editor_body.buffer().set_text(&s.body);
-        self.stack.set_visible_child_name("editor");
-        self.hint.set_text("Ctrl+S Save · Esc Cancel");
+        self.side.set_visible_child_name("editor");
+        self.hint.set_text("Ctrl S saves · Esc cancels");
         self.editor_body.grab_focus();
     }
 
@@ -950,7 +1535,7 @@ impl Popup {
             if let Some(p) = w.upgrade() {
                 match r {
                     Ok(_) => {
-                        p.back_to_list();
+                        p.back_to_preview();
                         p.set_tab(Tab::Snippets);
                         p.toast("Snippet saved", false);
                         p.refresh(false);
@@ -961,8 +1546,8 @@ impl Popup {
         });
     }
 
-    fn back_to_list(&self) {
-        self.stack.set_visible_child_name("list");
+    fn back_to_preview(&self) {
+        self.side.set_visible_child_name("preview");
         self.result.borrow_mut().take();
         self.target_for.borrow_mut().take();
         self.focus_search();
@@ -971,9 +1556,8 @@ impl Popup {
 
     // ---- Actions
 
-    fn open_actions(&self, at: Option<(f64, f64)>) {
+    fn open_actions(&self) {
         let Some(item) = self.selected() else { return };
-        let Some(row) = self.list.selected_row() else { return };
         match item {
             Item::Entry(e) => {
                 let w = self.weak();
@@ -981,110 +1565,201 @@ impl Popup {
                     let r = client::actions(e.id).await;
                     let Some(p) = w.upgrade() else { return };
                     match r {
-                        Ok(list) => p.menu(&row, at, e, list),
+                        Ok(list) => p.show_actions(Item::Entry(e), list),
                         Err(err) => p.toast(&err, true),
                     }
                 });
             }
             Item::Snippet(s) => {
-                let acts = [("paste", "Paste", "edit-paste-symbolic"), ("copy", "Copy", "edit-copy-symbolic"), ("edit", "Edit", "document-edit-symbolic"), ("delete", "Delete", "user-trash-symbolic")];
-                let pop = self.popover(&row, at);
-                let lb = gtk::ListBox::new();
-                lb.add_css_class("cb-menu");
-                for (id, l, i) in acts {
-                    lb.append(&menu_row(id, l, i));
-                }
-                let w = self.weak();
-                let pop2 = pop.clone();
-                lb.connect_row_activated(move |_, r| {
-                    pop2.popdown();
-                    let Some(p) = w.upgrade() else { return };
-                    match r.widget_name().as_str() {
-                        "paste" => p.activate(false),
-                        "copy" => p.copy_selected(),
-                        "edit" => p.edit_snippet(Some(s.clone())),
-                        "delete" => p.delete_selected(),
-                        _ => {}
-                    }
-                });
-                pop.set_child(Some(&lb));
-                pop.popup();
-                if let Some(r) = lb.row_at_index(0) {
-                    r.grab_focus();
-                }
+                let a = |id: &str, label: &str, icon: &str, group: Group| Action {
+                    id: id.into(),
+                    label: label.into(),
+                    icon: icon.into(),
+                    group,
+                    source: "builtin".into(),
+                    destructive: id == "delete",
+                    previews: false,
+                };
+                let list = vec![
+                    a("paste", "Paste", "edit-paste-symbolic", Group::Paste),
+                    a("copy", "Copy", "edit-copy-symbolic", Group::Paste),
+                    a("edit", "Edit", "document-edit-symbolic", Group::Organize),
+                    a("delete", "Delete", "user-trash-symbolic", Group::Organize),
+                ];
+                self.show_actions(Item::Snippet(s), list);
             }
             _ => {}
         }
     }
 
-    fn popover(&self, row: &gtk::ListBoxRow, at: Option<(f64, f64)>) -> gtk::Popover {
-        let pop = gtk::Popover::new();
-        pop.add_css_class("cb-popover");
-        pop.set_parent(row);
-        pop.set_has_arrow(false);
-        pop.set_position(gtk::PositionType::Bottom);
-        if let Some((x, y)) = at {
-            pop.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+    fn show_actions(&self, subject: Item, list: Vec<Action>) {
+        let pane = &self.pane;
+        for c in &pane.columns {
+            clear_box(c);
         }
-        pop.connect_closed(|p| {
-            let p = p.clone();
-            glib::idle_add_local_once(move || p.unparent());
-        });
-        let w = self.weak();
-        pop.connect_closed(move |_| {
-            if let Some(p) = w.upgrade() {
-                p.focus_search();
+        let translate = Settings::load().translate_to;
+        let entry = matches!(subject, Item::Entry(_));
+        let mut sections: Vec<(&str, Vec<Action>)> = Vec::new();
+        for mut a in list {
+            // Paste and Paste as plain text are the preview's own buttons.
+            if entry && matches!(a.id.as_str(), "paste" | "paste-plain") {
+                continue;
             }
-        });
-        pop
+            if a.id == "ai-translate" && !translate.trim().is_empty() {
+                a.label = format!("Translate into {}", translate.trim());
+            }
+            let h = heading(a.group);
+            match sections.iter_mut().find(|(x, _)| *x == h) {
+                Some((_, v)) => v.push(a),
+                None => sections.push((h, vec![a])),
+            }
+        }
+        sections.sort_by_key(|(h, _)| HEADINGS.iter().position(|x| x == h));
+        let mut order: [Vec<(Action, gtk::Button)>; 2] = [Vec::new(), Vec::new()];
+        for (i, (h, acts)) in sections.into_iter().enumerate() {
+            let g = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            g.add_css_class("cb-ag");
+            g.append(&label(h, "cb-ag-head"));
+            for a in acts {
+                let (b, l) = icon_button(&themed(&a.icon, group_icon(a.group)), &a.label);
+                l.set_ellipsize(gtk::pango::EllipsizeMode::End);
+                b.set_tooltip_text(Some(&a.label));
+                b.add_css_class("flat");
+                b.add_css_class("cb-ai");
+                if a.destructive {
+                    b.add_css_class("danger");
+                }
+                if let Some(c) = b.child() {
+                    c.set_halign(gtk::Align::Start);
+                }
+                let w = self.weak();
+                let id = a.id.clone();
+                b.connect_clicked(move |_| {
+                    if let Some(p) = w.upgrade() {
+                        p.run_pane_action(&id);
+                    }
+                });
+                g.append(&b);
+                order[i % 2].push((a, b));
+            }
+            pane.columns[i % 2].append(&g);
+        }
+        let [left_col, right_col] = order;
+        *pane.items.borrow_mut() = left_col.into_iter().chain(right_col).collect();
+        pane.selected.set(None);
+        let title = match &subject {
+            Item::Entry(e) => e.preview.clone(),
+            Item::Snippet(s) => s.name.clone(),
+            _ => String::new(),
+        };
+        let short: String = title.chars().take(28).collect();
+        let more = if title.chars().count() > 28 { "…" } else { "" };
+        pane.about.set_text(&format!("Actions for “{short}{more}”"));
+        *pane.subject.borrow_mut() = Some(subject);
+        pane.field.set_text("");
+        self.filter_actions();
+        pane.scroll.vadjustment().set_value(0.0);
+        self.side.set_visible_child_name("actions");
+        pane.field.grab_focus();
     }
 
-    fn menu(&self, row: &gtk::ListBoxRow, at: Option<(f64, f64)>, entry: Entry, list: Vec<Action>) {
-        let pop = self.popover(row, at);
-        let scroll = gtk::ScrolledWindow::new();
-        scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
-        scroll.set_propagate_natural_height(true);
-        scroll.set_max_content_height(420);
-        let lb = gtk::ListBox::new();
-        lb.add_css_class("cb-menu");
-        let mut group: Option<Group> = None;
-        for a in &list {
-            if group != Some(a.group) {
-                if group.is_some() {
-                    let sep = gtk::ListBoxRow::new();
-                    sep.set_selectable(false);
-                    sep.set_activatable(false);
-                    sep.set_can_focus(false);
-                    let l = label(&a.group.label().to_uppercase(), "cb-menu-group");
-                    sep.set_child(Some(&l));
-                    lb.append(&sep);
+    fn pane_query(&self) -> String {
+        self.pane.field.text().trim().to_lowercase()
+    }
+
+    fn filter_actions(&self) {
+        let q = self.pane_query();
+        let first = {
+            let items = self.pane.items.borrow();
+            let mut first = None;
+            for (i, (a, b)) in items.iter().enumerate() {
+                let hit = matches(&a.label, &q);
+                if q.is_empty() {
+                    b.remove_css_class("hit");
+                    b.remove_css_class("dim");
+                } else if hit {
+                    b.add_css_class("hit");
+                    b.remove_css_class("dim");
+                } else {
+                    b.add_css_class("dim");
+                    b.remove_css_class("hit");
                 }
-                group = Some(a.group);
+                if hit && first.is_none() {
+                    first = Some(i);
+                }
             }
-            let r = menu_row(&a.id, &a.label, &a.icon);
-            if a.destructive {
-                r.add_css_class("danger");
+            first
+        };
+        let keep = self.pane.selected.get().filter(|&i| self.pane.items.borrow().get(i).is_some_and(|(a, _)| matches(&a.label, &q)));
+        self.select_action(keep.or(first));
+    }
+
+    fn select_action(&self, i: Option<usize>) {
+        for (j, (_, b)) in self.pane.items.borrow().iter().enumerate() {
+            if Some(j) == i {
+                b.add_css_class("sel");
+                if let Some(grid) = self.pane.columns[0].parent()
+                    && let Some(bounds) = b.compute_bounds(&grid)
+                {
+                    let adj = self.pane.scroll.vadjustment();
+                    let (y, h) = (f64::from(bounds.y()), f64::from(bounds.height()));
+                    if y < adj.value() {
+                        adj.set_value(y);
+                    } else if y + h > adj.value() + adj.page_size() {
+                        adj.set_value(y + h - adj.page_size());
+                    }
+                }
+            } else {
+                b.remove_css_class("sel");
             }
-            lb.append(&r);
         }
-        scroll.set_child(Some(&lb));
-        let w = self.weak();
-        let pop2 = pop.clone();
-        let actions: HashMap<String, Action> = list.into_iter().map(|a| (a.id.clone(), a)).collect();
-        lb.connect_row_activated(move |_, r| {
-            let id = r.widget_name().to_string();
-            let Some(a) = actions.get(&id).cloned() else { return };
-            let Some(p) = w.upgrade() else { return };
-            if a.destructive && !p.armed(&format!("action:{id}"), "Press again to delete") {
-                return;
+        self.pane.selected.set(i);
+    }
+
+    fn move_action(&self, delta: i32) {
+        let q = self.pane_query();
+        let hits: Vec<usize> =
+            self.pane.items.borrow().iter().enumerate().filter(|(_, (a, _))| matches(&a.label, &q)).map(|(i, _)| i).collect();
+        if hits.is_empty() {
+            return;
+        }
+        let pos = self.pane.selected.get().and_then(|s| hits.iter().position(|&h| h == s));
+        let next = match pos {
+            Some(p) => (p as i32 + delta).clamp(0, hits.len() as i32 - 1) as usize,
+            None => 0,
+        };
+        self.select_action(Some(hits[next]));
+    }
+
+    fn run_selected_action(&self) {
+        let id = self.pane.selected.get().and_then(|i| self.pane.items.borrow().get(i).map(|(a, _)| a.id.clone()));
+        if let Some(id) = id {
+            self.run_pane_action(&id);
+        }
+    }
+
+    fn run_pane_action(&self, id: &str) {
+        let Some(subject) = self.pane.subject.borrow().clone() else { return };
+        let Some(a) = self.pane.items.borrow().iter().find(|(a, _)| a.id == id).map(|(a, _)| a.clone()) else { return };
+        if a.destructive && !self.armed(&format!("action:{id}"), "Press again to delete") {
+            return;
+        }
+        match subject {
+            Item::Entry(e) => {
+                self.back_to_preview();
+                self.run_action(&e, &a);
             }
-            pop2.popdown();
-            p.run_action(&entry, &a);
-        });
-        pop.set_child(Some(&scroll));
-        pop.popup();
-        if let Some(r) = lb.row_at_index(0) {
-            r.grab_focus();
+            Item::Snippet(s) => {
+                self.back_to_preview();
+                match id {
+                    "paste" => self.activate(false),
+                    "copy" => self.copy_selected(),
+                    "edit" => self.edit_snippet(Some(s)),
+                    "delete" => self.forget_snippet(s.id),
+                    _ => {}
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1097,7 +1772,7 @@ impl Popup {
                 self.target_title.set_text("Add to which note? Type its name or path in the vault.");
                 self.target.set_text("");
                 self.target.set_placeholder_text(Some("Note name"));
-                self.stack.set_visible_child_name("target");
+                self.side.set_visible_child_name("target");
                 self.target.grab_focus();
                 return;
             }
@@ -1120,7 +1795,7 @@ impl Popup {
             self.result_title.set_text(&format!("{label}…"));
             self.result_text.buffer().set_text("");
             self.result_buttons.set_visible(false);
-            self.stack.set_visible_child_name("result");
+            self.side.set_visible_child_name("result");
         }
         let w = self.weak();
         act(async move {
@@ -1130,7 +1805,7 @@ impl Popup {
                 Ok(o) => p.outcome(o, &label, previews),
                 Err(e) => {
                     if previews {
-                        p.back_to_list();
+                        p.back_to_preview();
                     }
                     p.toast(&e, true);
                 }
@@ -1141,7 +1816,7 @@ impl Popup {
     fn outcome(&self, o: Outcome, label: &str, previews: bool) {
         if !o.ok {
             if previews {
-                self.back_to_list();
+                self.back_to_preview();
             }
             self.toast(if o.message.is_empty() { "That didn't work" } else { &o.message }, true);
             return;
@@ -1155,11 +1830,11 @@ impl Popup {
             self.result_text.buffer().set_text(&t);
             *self.result.borrow_mut() = Some(Result { text: t });
             self.result_buttons.set_visible(true);
-            self.stack.set_visible_child_name("result");
-            self.hint.set_text("Ctrl+C Copy · ↵ Paste · Esc Back");
+            self.side.set_visible_child_name("result");
+            self.hint.set_text("Ctrl C copies · ↵ pastes · Esc goes back");
             return;
         }
-        self.back_to_list();
+        self.back_to_preview();
         if !o.message.is_empty() {
             self.toast(&o.message, false);
         }
@@ -1177,7 +1852,7 @@ impl Popup {
             if !paste && let Some(p) = w.upgrade() {
                 match r {
                     Ok(_) => {
-                        p.back_to_list();
+                        p.back_to_preview();
                         p.toast("Copied", false);
                         p.refresh(true);
                     }
@@ -1194,7 +1869,7 @@ impl Popup {
             *self.target_for.borrow_mut() = Some((id, action));
             return;
         }
-        self.back_to_list();
+        self.back_to_preview();
         self.run_with(id, action, "Add to a note".into(), false, serde_json::json!({ "target": target }));
     }
 
@@ -1203,17 +1878,16 @@ impl Popup {
         act(async move {
             let (name, bytes) = if let Some(img) = &entry.image {
                 let ext = img.rsplit('.').next().unwrap_or("png").to_string();
-                let name = format!("Clipboard {}.{ext}", nyx_clipboard_core::snippet::local(entry.created, "%Y-%m-%d %H.%M.%S"));
+                let name = format!("Clipboard {}.{ext}", local(entry.created, "%Y-%m-%d %H.%M.%S"));
                 (name, std::fs::read(img).ok())
             } else {
                 let d = client::detail(entry.id).await.ok();
                 let ext = match entry.kind {
                     Kind::Markdown => "md",
                     Kind::Html => "html",
-                    Kind::Code => "txt",
                     _ => "txt",
                 };
-                let name = format!("Clipboard {}.{ext}", nyx_clipboard_core::snippet::local(entry.created, "%Y-%m-%d %H.%M"));
+                let name = format!("Clipboard {}.{ext}", local(entry.created, "%Y-%m-%d %H.%M"));
                 (name, d.map(|d| d.text.into_bytes()))
             };
             let Some(bytes) = bytes else { return };
@@ -1230,14 +1904,14 @@ impl Popup {
     fn show_help(&self) {
         let mut t = String::new();
         for (what, keys) in SHORTCUTS {
-            t.push_str(&format!("{what:<28} {keys}\n"));
+            t.push_str(&format!("{what:<31} {keys}\n"));
         }
-        self.result_title.set_text("Keyboard shortcuts");
+        self.result_title.set_text("Every key");
         self.result_text.buffer().set_text(t.trim_end());
         *self.result.borrow_mut() = None;
         self.result_buttons.set_visible(false);
-        self.stack.set_visible_child_name("result");
-        self.hint.set_text("Esc Back");
+        self.side.set_visible_child_name("result");
+        self.hint.set_text("Esc goes back");
     }
 
     /// Keys for the whole popup. Typing goes to the search field.
@@ -1246,12 +1920,34 @@ impl Popup {
         let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
-        let page = self.stack.visible_child_name().unwrap_or_default();
+        let page = self.side.visible_child_name().unwrap_or_default();
         match page.as_str() {
+            "actions" => {
+                return match key {
+                    gdk::Key::Escape => {
+                        self.disarm();
+                        self.back_to_preview();
+                        Stop
+                    }
+                    gdk::Key::Down => {
+                        self.move_action(1);
+                        Stop
+                    }
+                    gdk::Key::Up => {
+                        self.move_action(-1);
+                        Stop
+                    }
+                    gdk::Key::Return | gdk::Key::KP_Enter => {
+                        self.run_selected_action();
+                        Stop
+                    }
+                    _ => Proceed,
+                };
+            }
             "result" => {
                 return match key {
                     gdk::Key::Escape | gdk::Key::BackSpace => {
-                        self.back_to_list();
+                        self.back_to_preview();
                         Stop
                     }
                     gdk::Key::c if ctrl => {
@@ -1268,7 +1964,7 @@ impl Popup {
             "editor" => {
                 return match key {
                     gdk::Key::Escape => {
-                        self.back_to_list();
+                        self.back_to_preview();
                         Stop
                     }
                     gdk::Key::s | gdk::Key::Return if ctrl => {
@@ -1281,7 +1977,7 @@ impl Popup {
             "target" => {
                 return match key {
                     gdk::Key::Escape => {
-                        self.back_to_list();
+                        self.back_to_preview();
                         Stop
                     }
                     gdk::Key::Return | gdk::Key::KP_Enter => {
@@ -1323,7 +2019,7 @@ impl Popup {
                 Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter if ctrl => {
-                self.open_actions(None);
+                self.open_actions();
                 Stop
             }
             gdk::Key::Return | gdk::Key::KP_Enter => {
@@ -1347,19 +2043,24 @@ impl Popup {
                 Stop
             }
             gdk::Key::Menu => {
-                self.open_actions(None);
+                self.open_actions();
                 Stop
             }
             gdk::Key::F10 if shift => {
-                self.open_actions(None);
+                self.open_actions();
                 Stop
             }
             gdk::Key::F1 | gdk::Key::question if key == gdk::Key::F1 || self.search.text().is_empty() => {
                 self.show_help();
                 Stop
             }
+            gdk::Key::comma if ctrl => {
+                self.open_settings();
+                Stop
+            }
             gdk::Key::space if ctrl => {
                 self.toggle_mark();
+                self.show_preview();
                 Stop
             }
             gdk::Key::P if ctrl && shift => {
@@ -1401,22 +2102,6 @@ impl Popup {
     }
 }
 
-fn menu_row(id: &str, text: &str, icon: &str) -> gtk::ListBoxRow {
-    let r = gtk::ListBoxRow::new();
-    r.set_widget_name(id);
-    r.add_css_class("cb-menu-row");
-    let b = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    let i = gtk::Image::from_icon_name(icon);
-    i.set_pixel_size(16);
-    b.append(&i);
-    let l = gtk::Label::new(Some(text));
-    l.set_xalign(0.0);
-    l.set_hexpand(true);
-    b.append(&l);
-    r.set_child(Some(&b));
-    r
-}
-
 fn find_named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
     if w.widget_name() == name {
         return Some(w.clone());
@@ -1429,6 +2114,153 @@ fn find_named(w: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
         c = child.next_sibling();
     }
     None
+}
+
+/// A scrolled area that doesn't ask for its content's natural width, so long text or a
+/// large picture never widens the card.
+fn scrolled(child: &impl IsA<gtk::Widget>, h: gtk::PolicyType, v: gtk::PolicyType) -> gtk::ScrolledWindow {
+    let s = gtk::ScrolledWindow::new();
+    s.set_hscrollbar_policy(h);
+    s.set_vscrollbar_policy(v);
+    s.set_child(Some(child));
+    s
+}
+
+fn build_preview() -> (gtk::Box, Preview, gtk::Button) {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    page.add_css_class("cb-prev");
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    head.add_css_class("cb-pm");
+    let pi = icon("text-x-generic-symbolic", 15);
+    head.append(&pi);
+    let meta = label("", "cb-pm-text");
+    head.append(&meta);
+    page.append(&head);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    body.add_css_class("cb-pbody-box");
+    let scroll = scrolled(&body, gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+    page.append(&scroll);
+    let picture = gtk::Picture::new();
+    picture.set_content_fit(gtk::ContentFit::Contain);
+    picture.set_can_shrink(true);
+    picture.add_css_class("cb-ppic");
+    let picture_box = scrolled(&picture, gtk::PolicyType::External, gtk::PolicyType::External);
+    picture_box.set_vexpand(true);
+    picture_box.set_visible(false);
+    page.append(&picture_box);
+    let facts = gtk::Grid::new();
+    facts.add_css_class("cb-facts");
+    facts.set_row_spacing(6);
+    facts.set_column_spacing(14);
+    page.append(&facts);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bar.add_css_class("cb-pacts");
+    let paste = gtk::Button::new();
+    let pb = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let enter = gtk::Label::new(Some("↵"));
+    enter.add_css_class("cb-enter");
+    pb.append(&enter);
+    let paste_label = gtk::Label::new(Some("Paste"));
+    pb.append(&paste_label);
+    paste.set_child(Some(&pb));
+    paste.add_css_class("suggested-action");
+    paste.set_focus_on_click(false);
+    paste.set_tooltip_text(Some("Paste into the window you were in (Enter)"));
+    bar.append(&paste);
+    let plain = gtk::Button::new();
+    let plain_label = gtk::Label::new(Some("Paste as plain text"));
+    plain.set_child(Some(&plain_label));
+    plain.set_focus_on_click(false);
+    bar.append(&plain);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+    let pin = gtk::Button::from_icon_name("view-pin-symbolic");
+    let favorite = gtk::Button::from_icon_name("non-starred-symbolic");
+    let (edit, _) = icon_button("document-edit-symbolic", "Edit");
+    edit.set_tooltip_text(Some("Edit the snippet (Ctrl E)"));
+    let (actions, actions_label) = icon_button("view-more-horizontal-symbolic", "Actions");
+    actions.set_tooltip_text(Some("Change it, send it, ask the Assistant (Ctrl Enter)"));
+    for b in [&pin, &favorite] {
+        b.add_css_class("icon-button");
+        b.add_css_class("cb-pact-icon");
+        b.set_focus_on_click(false);
+    }
+    for b in [&edit, &actions] {
+        b.add_css_class("flat");
+    }
+    bar.append(&pin);
+    bar.append(&favorite);
+    bar.append(&edit);
+    bar.append(&actions);
+    page.append(&bar);
+    let preview = Preview {
+        icon: pi,
+        meta,
+        scroll,
+        body,
+        picture_box,
+        picture,
+        facts,
+        bar,
+        paste_label,
+        plain,
+        plain_label,
+        pin,
+        favorite,
+        edit,
+        actions,
+        actions_label,
+        left: RefCell::default(),
+    };
+    (page, preview, paste)
+}
+
+fn build_pane() -> (gtk::Box, Pane, gtk::Button) {
+    let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    page.add_css_class("cb-prev");
+    page.add_css_class("cb-actp");
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    head.add_css_class("cb-afield");
+    let field = gtk::SearchEntry::new();
+    field.set_hexpand(true);
+    field.set_placeholder_text(Some("Search actions"));
+    field.set_search_delay(30);
+    field.update_property(&[gtk::accessible::Property::Label("Search actions")]);
+    head.append(&field);
+    let about = gtk::Label::new(None);
+    about.add_css_class("cb-ah");
+    about.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    about.set_max_width_chars(30);
+    about.set_width_chars(1);
+    head.append(&about);
+    page.append(&head);
+    let grid = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    grid.add_css_class("cb-agrid");
+    grid.set_homogeneous(true);
+    let columns = [gtk::Box::new(gtk::Orientation::Vertical, 4), gtk::Box::new(gtk::Orientation::Vertical, 4)];
+    for c in &columns {
+        c.set_valign(gtk::Align::Start);
+        grid.append(c);
+    }
+    let scroll = scrolled(&grid, gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+    page.append(&scroll);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    bar.add_css_class("cb-pacts");
+    let (back, _) = icon_button("go-previous-symbolic", "Back");
+    back.add_css_class("flat");
+    bar.append(&back);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    bar.append(&spacer);
+    let hint = gtk::Label::new(Some("↵ runs it · Esc goes back"));
+    hint.add_css_class("cb-hint");
+    bar.append(&hint);
+    page.append(&bar);
+    let pane = Pane { field, about, scroll, columns, items: RefCell::default(), selected: Cell::new(None), subject: RefCell::default() };
+    (page, pane, back)
 }
 
 pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
@@ -1459,14 +2291,14 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
 
     let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
     card.add_css_class("cb-card");
-    card.set_size_request(WIDTH, -1);
-    card.set_halign(gtk::Align::Center);
-    card.set_valign(gtk::Align::Center);
+    card.set_size_request(WIDTH, HEIGHT);
+    card.set_halign(gtk::Align::Fill);
+    card.set_valign(gtk::Align::Fill);
     card.set_vexpand(true);
     card.set_hexpand(true);
     root.append(&card);
 
-    // Search and the three views.
+    // Search, the three views with their counts, and private mode.
     let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     head.add_css_class("cb-head");
     let search = gtk::SearchEntry::new();
@@ -1476,35 +2308,70 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     search.update_property(&[gtk::accessible::Property::Label("Search the clipboard")]);
     head.append(&search);
     let seg = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    seg.add_css_class("cb-segmented");
+    seg.add_css_class("cb-tabs");
     let mut tabs = Vec::new();
     let mut group: Option<gtk::ToggleButton> = None;
-    for (t, icon, tip) in [
-        (Tab::Recent, "document-open-recent-symbolic", "Recent (Ctrl+1)"),
-        (Tab::Pinned, "view-pin-symbolic", "Pinned (Ctrl+2)"),
-        (Tab::Snippets, "insert-text-symbolic", "Snippets (Ctrl+3)"),
-    ] {
+    for (t, name, key) in [(Tab::Recent, "Recent", "Ctrl 1"), (Tab::Pinned, "Pinned", "Ctrl 2"), (Tab::Snippets, "Snippets", "Ctrl 3")] {
         let b = gtk::ToggleButton::new();
-        b.set_icon_name(icon);
-        b.set_tooltip_text(Some(tip));
+        let bx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        bx.append(&gtk::Label::new(Some(name)));
+        let n = gtk::Label::new(None);
+        n.add_css_class("cb-count");
+        bx.append(&n);
+        b.set_child(Some(&bx));
+        b.set_tooltip_text(Some(&format!("{name} ({key})")));
         b.set_focus_on_click(false);
-        b.update_property(&[gtk::accessible::Property::Label(tip)]);
+        b.update_property(&[gtk::accessible::Property::Label(name)]);
         if let Some(g) = &group {
             b.set_group(Some(g));
         } else {
             group = Some(b.clone());
         }
         seg.append(&b);
-        tabs.push((t, b));
+        tabs.push((t, b, n));
     }
     head.append(&seg);
     let private = gtk::ToggleButton::new();
-    private.set_icon_name("view-conceal-symbolic");
-    private.set_tooltip_text(Some("Private mode: stop saving copies (Ctrl+Shift+P)"));
-    private.add_css_class("cb-icon-button");
+    let pbx = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    pbx.append(&icon("view-conceal-symbolic", 15));
+    pbx.append(&gtk::Label::new(Some("Private")));
+    private.set_child(Some(&pbx));
+    private.set_tooltip_text(Some("Private mode: stop saving what you copy until you turn it off (Ctrl Shift P)"));
+    private.add_css_class("cb-priv");
     private.set_focus_on_click(false);
     head.append(&private);
     card.append(&head);
+
+    // Kinds, as chips, and the prefixes that do the same in the search.
+    let kinds_row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    kinds_row.add_css_class("cb-kinds");
+    let mut kinds = Vec::new();
+    let mut kgroup: Option<gtk::ToggleButton> = None;
+    for (k, name) in KINDS {
+        let b = gtk::ToggleButton::with_label(name);
+        b.add_css_class("cb-kind");
+        b.set_focus_on_click(false);
+        if let Some(g) = &kgroup {
+            b.set_group(Some(g));
+        } else {
+            kgroup = Some(b.clone());
+        }
+        kinds_row.append(&b);
+        kinds.push((k, b));
+    }
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    kinds_row.append(&spacer);
+    let tip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    tip.add_css_class("cb-tip");
+    tip.append(&gtk::Label::new(Some("or type")));
+    for p in ["img:", "url:", "fav:"] {
+        let c = gtk::Label::new(Some(p));
+        c.add_css_class("cb-tip-code");
+        tip.append(&c);
+    }
+    kinds_row.append(&tip);
+    card.append(&kinds_row);
 
     let banner = gtk::Label::new(None);
     banner.add_css_class("cb-banner");
@@ -1513,34 +2380,42 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     banner.set_visible(false);
     card.append(&banner);
 
-    let stack = gtk::Stack::new();
-    stack.set_transition_type(gtk::StackTransitionType::Crossfade);
-    // Reduce motion (the desktop's animations off) means no crossfade either.
-    let animate = gtk::Settings::default().is_none_or(|s| s.is_gtk_enable_animations());
-    stack.set_transition_duration(if animate { 120 } else { 0 });
-    stack.set_vhomogeneous(false);
-    stack.set_interpolate_size(true);
-
-    let list_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    // The list and, beside it, the chosen item.
+    let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    body.add_css_class("cb-body");
+    body.set_vexpand(true);
+    let list_side = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list_side.add_css_class("cb-listside");
+    list_side.set_size_request(LIST_WIDTH, -1);
     let list = gtk::ListBox::new();
     list.add_css_class("cb-list");
     list.set_selection_mode(gtk::SelectionMode::Single);
-    list.set_activate_on_single_click(true);
+    list.set_activate_on_single_click(false);
     list.update_property(&[gtk::accessible::Property::Label("Clipboard history")]);
-    let scroller = gtk::ScrolledWindow::new();
-    scroller.set_hscrollbar_policy(gtk::PolicyType::Never);
-    scroller.set_vscrollbar_policy(gtk::PolicyType::Automatic);
-    scroller.set_propagate_natural_height(true);
-    scroller.set_max_content_height(MAX_LIST);
-    scroller.set_child(Some(&list));
-    list_page.append(&scroller);
+    let scroller = scrolled(&list, gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroller.set_vexpand(true);
+    list_side.append(&scroller);
     let empty = gtk::Label::new(None);
     empty.add_css_class("cb-empty");
     empty.set_wrap(true);
     empty.set_justify(gtk::Justification::Center);
+    empty.set_vexpand(true);
     empty.set_visible(false);
-    list_page.append(&empty);
-    stack.add_named(&list_page, Some("list"));
+    list_side.append(&empty);
+    body.append(&list_side);
+    body.append(&gtk::Separator::new(gtk::Orientation::Vertical));
+
+    let side = gtk::Stack::new();
+    side.set_hexpand(true);
+    side.set_transition_type(gtk::StackTransitionType::Crossfade);
+    // Reduce motion (the desktop's animations off) means no crossfade either.
+    let animate = gtk::Settings::default().is_none_or(|s| s.is_gtk_enable_animations());
+    side.set_transition_duration(if animate { 120 } else { 0 });
+
+    let (preview_page, preview, paste_b) = build_preview();
+    side.add_named(&preview_page, Some("preview"));
+    let (pane_page, pane, pane_back) = build_pane();
+    side.add_named(&pane_page, Some("actions"));
 
     // An action's result (Assistant, OCR) or the shortcuts.
     let result_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -1556,34 +2431,35 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     result_text.set_top_margin(8);
     result_text.set_bottom_margin(8);
     result_text.add_css_class("cb-result");
-    let rs = gtk::ScrolledWindow::new();
-    rs.set_hscrollbar_policy(gtk::PolicyType::Never);
-    rs.set_propagate_natural_height(true);
-    rs.set_min_content_height(120);
-    rs.set_max_content_height(MAX_LIST - 60);
-    rs.set_child(Some(&result_text));
+    let rs = scrolled(&result_text, gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    rs.set_vexpand(true);
     result_page.append(&rs);
     let rb = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    rb.set_halign(gtk::Align::End);
-    let back = gtk::Button::with_label("Back");
+    rb.add_css_class("cb-pacts");
+    let (back, _) = icon_button("go-previous-symbolic", "Back");
+    back.add_css_class("flat");
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
     let copy_b = gtk::Button::with_label("Copy");
-    let paste_b = gtk::Button::with_label("Paste");
-    paste_b.add_css_class("suggested-action");
+    let use_paste = gtk::Button::with_label("Paste");
+    use_paste.add_css_class("suggested-action");
     let use_buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for b in [&back, &copy_b, &paste_b] {
+    for b in [&back, &copy_b, &use_paste] {
         b.set_focus_on_click(false);
     }
     rb.append(&back);
+    rb.append(&spacer);
     use_buttons.append(&copy_b);
-    use_buttons.append(&paste_b);
+    use_buttons.append(&use_paste);
     rb.append(&use_buttons);
     result_page.append(&rb);
-    stack.add_named(&result_page, Some("result"));
+    side.add_named(&result_page, Some("result"));
 
     // Snippet editor.
     let editor = gtk::Box::new(gtk::Orientation::Vertical, 8);
     editor.add_css_class("cb-page");
-    editor.append(&label("Snippet: {date} {time} {datetime} {weekday} {clipboard} are filled in when it's pasted", "cb-page-title"));
+    let eh = label("Snippet", "cb-editor-title");
+    editor.append(&eh);
     let editor_name = gtk::Entry::new();
     editor_name.set_placeholder_text(Some("Name"));
     editor.append(&editor_name);
@@ -1595,21 +2471,33 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     editor_body.set_bottom_margin(8);
     editor_body.add_css_class("cb-result");
     editor_body.update_property(&[gtk::accessible::Property::Label("Snippet text")]);
-    let es = gtk::ScrolledWindow::new();
-    es.set_min_content_height(160);
-    es.set_max_content_height(320);
-    es.set_propagate_natural_height(true);
-    es.set_child(Some(&editor_body));
+    let es = scrolled(&editor_body, gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    es.set_vexpand(true);
     editor.append(&es);
+    let fills = gtk::FlowBox::new();
+    fills.add_css_class("cb-fills");
+    fills.set_selection_mode(gtk::SelectionMode::None);
+    fills.set_column_spacing(5);
+    fills.set_row_spacing(4);
+    fills.set_max_children_per_line(6);
+    fills.append(&gtk::Label::new(Some("Filled in when pasted:")));
+    for f in ["{date}", "{time}", "{datetime}", "{weekday}", "{clipboard}"] {
+        let c = gtk::Label::new(Some(f));
+        c.add_css_class("cb-fill");
+        c.set_halign(gtk::Align::Start);
+        fills.append(&c);
+    }
+    editor.append(&fills);
     let eb = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     eb.set_halign(gtk::Align::End);
     let cancel = gtk::Button::with_label("Cancel");
+    cancel.add_css_class("flat");
     let save = gtk::Button::with_label("Save");
     save.add_css_class("suggested-action");
     eb.append(&cancel);
     eb.append(&save);
     editor.append(&eb);
-    stack.add_named(&editor, Some("editor"));
+    side.add_named(&editor, Some("editor"));
 
     // Asking for a target (which note).
     let target_page = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -1619,8 +2507,9 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     target_page.append(&target_title);
     let target = gtk::Entry::new();
     target_page.append(&target);
-    stack.add_named(&target_page, Some("target"));
-    card.append(&stack);
+    side.add_named(&target_page, Some("target"));
+    body.append(&side);
+    card.append(&body);
 
     let foot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     foot.add_css_class("cb-foot");
@@ -1629,6 +2518,11 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     toast.set_visible(false);
     foot.append(&hint);
     foot.append(&toast);
+    let (settings_b, _) = icon_button("preferences-system-symbolic", "Settings");
+    settings_b.add_css_class("flat");
+    settings_b.add_css_class("cb-set");
+    settings_b.set_tooltip_text(Some("Clipboard's settings: history, privacy, codes (Ctrl ,)"));
+    foot.append(&settings_b);
     card.append(&foot);
 
     let popup = Rc::new(Popup {
@@ -1637,13 +2531,18 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
         search: search.clone(),
         tabs,
         private: private.clone(),
+        kinds_row,
+        kinds,
         banner,
-        stack: stack.clone(),
+        list_side,
+        side: side.clone(),
         list: list.clone(),
         scroller: scroller.clone(),
         empty,
         hint,
         toast,
+        preview,
+        pane,
         result_title,
         result_text,
         result_buttons: use_buttons.clone(),
@@ -1652,6 +2551,7 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
         target_title,
         target,
         tab: Cell::new(Tab::Recent),
+        kind: Cell::new(None),
         items: RefCell::default(),
         marked: RefCell::default(),
         details: RefCell::default(),
@@ -1660,6 +2560,7 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
         loading: Cell::new(false),
         generation: Cell::new(0),
         only,
+        narrow: Cell::new(false),
         listening: RefCell::default(),
         ticker: RefCell::default(),
         toast_timer: RefCell::default(),
@@ -1682,7 +2583,7 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
             p.refresh(true);
         }
     });
-    for (t, b) in &popup.tabs {
+    for (t, b, _) in &popup.tabs {
         let w = Rc::downgrade(&popup);
         let t = *t;
         b.connect_clicked(move |b| {
@@ -1690,6 +2591,19 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
                 if b.is_active() {
                     p.set_tab(t);
                 } else if p.tab.get() == t {
+                    b.set_active(true);
+                }
+            }
+        });
+    }
+    for (k, b) in &popup.kinds {
+        let w = Rc::downgrade(&popup);
+        let k = *k;
+        b.connect_clicked(move |b| {
+            if let Some(p) = w.upgrade() {
+                if b.is_active() {
+                    p.set_kind(k);
+                } else if p.kind.get() == k {
                     b.set_active(true);
                 }
             }
@@ -1704,9 +2618,29 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
         }
     });
     let w = Rc::downgrade(&popup);
+    list.connect_row_selected(move |_, _| {
+        if let Some(p) = w.upgrade() {
+            p.show_preview();
+        }
+    });
+    let w = Rc::downgrade(&popup);
     list.connect_row_activated(move |_, _| {
         if let Some(p) = w.upgrade() {
             p.activate(false);
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    list.set_header_func(move |row, before| {
+        let Some(p) = w.upgrade() else { return };
+        let items = p.items.borrow();
+        let day_of = |r: &gtk::ListBoxRow| match items.get(r.index() as usize) {
+            Some(Item::Entry(e)) => Some(day(e.last_used)),
+            _ => None,
+        };
+        let this = if p.tab.get() == Tab::Recent { day_of(row) } else { None };
+        match this {
+            Some(d) if before.and_then(day_of).as_ref() != Some(&d) => row.set_header(Some(&label(&d, "cb-day"))),
+            _ => row.set_header(None::<&gtk::Widget>),
         }
     });
     let w = Rc::downgrade(&popup);
@@ -1717,12 +2651,62 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
             p.more();
         }
     });
+    let pv = &popup.preview;
     let w = Rc::downgrade(&popup);
-    back.connect_clicked(move |_| {
+    paste_b.connect_clicked(move |_| {
         if let Some(p) = w.upgrade() {
-            p.back_to_list();
+            p.activate(false);
         }
     });
+    let w = Rc::downgrade(&popup);
+    pv.plain.connect_clicked(move |_| {
+        if let Some(p) = w.upgrade() {
+            match p.selected() {
+                Some(Item::Entry(_)) => p.activate(true),
+                _ => p.copy_selected(),
+            }
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    pv.pin.connect_clicked(move |_| {
+        if let Some(p) = w.upgrade() {
+            p.toggle_pin();
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    pv.favorite.connect_clicked(move |_| {
+        if let Some(p) = w.upgrade() {
+            p.toggle_favorite();
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    pv.edit.connect_clicked(move |_| {
+        if let Some(p) = w.upgrade()
+            && let Some(Item::Snippet(s)) = p.selected()
+        {
+            p.edit_snippet(Some(s));
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    pv.actions.connect_clicked(move |_| {
+        if let Some(p) = w.upgrade() {
+            p.open_actions();
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    popup.pane.field.connect_search_changed(move |_| {
+        if let Some(p) = w.upgrade() {
+            p.filter_actions();
+        }
+    });
+    for b in [&pane_back, &back, &cancel] {
+        let w = Rc::downgrade(&popup);
+        b.connect_clicked(move |_| {
+            if let Some(p) = w.upgrade() {
+                p.back_to_preview();
+            }
+        });
+    }
     let w = Rc::downgrade(&popup);
     copy_b.connect_clicked(move |_| {
         if let Some(p) = w.upgrade() {
@@ -1730,15 +2714,9 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
         }
     });
     let w = Rc::downgrade(&popup);
-    paste_b.connect_clicked(move |_| {
+    use_paste.connect_clicked(move |_| {
         if let Some(p) = w.upgrade() {
             p.result_use(true);
-        }
-    });
-    let w = Rc::downgrade(&popup);
-    cancel.connect_clicked(move |_| {
-        if let Some(p) = w.upgrade() {
-            p.back_to_list();
         }
     });
     let w = Rc::downgrade(&popup);
@@ -1751,6 +2729,12 @@ pub fn build(app: &gtk::Application, only: Option<String>) -> Rc<Popup> {
     popup.target.connect_activate(move |_| {
         if let Some(p) = w.upgrade() {
             p.submit_target();
+        }
+    });
+    let w = Rc::downgrade(&popup);
+    settings_b.connect_clicked(move |_| {
+        if let Some(p) = w.upgrade() {
+            p.open_settings();
         }
     });
 

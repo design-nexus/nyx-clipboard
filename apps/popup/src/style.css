@@ -2,84 +2,140 @@
  * (7 / 11 / 15). One solid card, no glass. */
 
 window.nyx-clipboard {
-  /* Not quite transparent: some compositors pass clicks through fully clear pixels. */
-  background: rgba(0, 0, 0, 0.004);
+  /* Never fully clear: some compositors pass clicks through fully clear pixels. */
+  background: @veil;
 }
 
 window.nyx-clipboard .cb-card {
   background: @theme_popover;
   border: 1px solid @theme_border;
   border-radius: 15px;
-  padding: 10px 8px 6px;
-  box-shadow: 0 12px 40px alpha(@theme_shadow, 0.45);
+  box-shadow: 0 16px 48px alpha(@theme_shadow, 0.45);
   color: @theme_text;
-  margin: 12px;
 }
 
 /* ---------- Head ---------- */
 
 window.nyx-clipboard .cb-head {
-  padding: 0 4px 8px;
+  padding: 12px 12px 10px;
 }
 
 window.nyx-clipboard entry.cb-search,
 window.nyx-clipboard .cb-search {
-  min-height: 32px;
+  min-height: 38px;
+  padding: 0 12px;
   border-radius: 7px;
   background: @field;
   border: 1px solid transparent;
   box-shadow: none;
+  font-size: 14px;
 }
 
 window.nyx-clipboard .cb-search:focus-within {
   border-color: alpha(@theme_accent, 0.6);
+  box-shadow: 0 0 0 3px alpha(@theme_accent, 0.14);
 }
 
-window.nyx-clipboard .cb-segmented {
+window.nyx-clipboard .cb-tabs {
   padding: 2px;
   border-radius: 7px;
   background: @field;
+  box-shadow: inset 0 0 0 1px @hairline;
 }
 
-window.nyx-clipboard .cb-segmented button {
-  min-height: 26px;
-  min-width: 34px;
-  padding: 0 6px;
+window.nyx-clipboard .cb-tabs button {
+  min-height: 30px;
+  padding: 0 10px;
   border-radius: 5px;
   background: none;
   box-shadow: none;
   color: @theme_dim_text;
+  font-weight: 500;
 }
 
-window.nyx-clipboard .cb-segmented button:checked {
+window.nyx-clipboard .cb-tabs button:hover {
+  color: @theme_text;
+}
+
+window.nyx-clipboard .cb-tabs button:checked {
   background: @theme_raised;
   color: @theme_text;
-  box-shadow: 0 1px 3px alpha(black, 0.25);
+  box-shadow: 0 1px 3px alpha(black, 0.22);
 }
 
-window.nyx-clipboard button.cb-icon-button {
-  min-width: 32px;
-  min-height: 32px;
-  padding: 0;
+window.nyx-clipboard .cb-count {
+  color: @theme_text_tertiary;
+  font-size: 11px;
+  font-weight: 400;
+  font-feature-settings: "tnum";
+}
+
+window.nyx-clipboard button.cb-priv {
+  min-height: 34px;
+  padding: 0 10px;
   border-radius: 7px;
   background: none;
-  box-shadow: none;
+  box-shadow: inset 0 0 0 1px @hairline;
   color: @theme_dim_text;
-  transition: background 120ms ease-out, color 120ms ease-out;
+  font-weight: 500;
 }
 
-window.nyx-clipboard button.cb-icon-button:hover {
+window.nyx-clipboard button.cb-priv:hover {
   background: @row_hover;
   color: @theme_text;
 }
 
-window.nyx-clipboard button.cb-icon-button:checked {
+window.nyx-clipboard button.cb-priv:checked {
   background: alpha(@theme_accent, 0.16);
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.45);
   color: @theme_accent;
 }
 
+/* ---------- Kinds ---------- */
+
+window.nyx-clipboard .cb-kinds {
+  padding: 0 12px 10px;
+}
+
+window.nyx-clipboard button.cb-kind {
+  min-height: 24px;
+  padding: 0 10px;
+  border-radius: 12px;
+  background: none;
+  box-shadow: none;
+  color: @theme_dim_text;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+window.nyx-clipboard button.cb-kind:hover {
+  background: @row_hover;
+  color: @theme_text;
+}
+
+window.nyx-clipboard button.cb-kind:checked {
+  background: @nav_active;
+  color: @theme_text;
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.35);
+}
+
+window.nyx-clipboard .cb-tip {
+  color: @theme_text_tertiary;
+  font-size: 11px;
+}
+
+window.nyx-clipboard .cb-tip-code,
+window.nyx-clipboard .cb-fill {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 10.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: @field;
+  color: @theme_dim_text;
+}
+
 window.nyx-clipboard .cb-banner {
-  margin: 0 4px 8px;
+  margin: 0 12px 10px;
   padding: 8px 10px;
   border-radius: 11px;
   background: alpha(@theme_accent, 0.10);
@@ -94,15 +150,28 @@ window.nyx-clipboard .cb-banner.danger {
 
 /* ---------- List ---------- */
 
+window.nyx-clipboard .cb-body {
+  border-top: 1px solid @divider;
+}
+
+window.nyx-clipboard .cb-body > separator {
+  background: @divider;
+  min-width: 1px;
+}
+
 window.nyx-clipboard scrolledwindow,
 window.nyx-clipboard .cb-list {
   background: none;
 }
 
+window.nyx-clipboard .cb-list {
+  padding: 8px 6px;
+}
+
 window.nyx-clipboard .cb-list row.cb-row {
   min-height: 44px;
-  padding: 4px 8px;
-  margin: 0 2px 2px;
+  padding: 5px 8px;
+  margin: 0 0 1px;
   border-radius: 7px;
   outline: none;
   transition: background 120ms ease-out;
@@ -121,14 +190,35 @@ window.nyx-clipboard .cb-list row.marked {
   box-shadow: inset 2px 0 @theme_accent;
 }
 
+window.nyx-clipboard .cb-day {
+  margin: 10px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: @theme_text_tertiary;
+}
+
 window.nyx-clipboard .cb-glyph {
-  border-radius: 7px;
-  background: alpha(@theme_text, 0.06);
+  border-radius: 8px;
+  background: @field;
+  box-shadow: inset 0 0 0 1px @hairline;
+}
+
+window.nyx-clipboard .cb-glyph:not(.tinted) {
   color: @theme_dim_text;
 }
 
+window.nyx-clipboard .cb-glyph.tinted {
+  background: alpha(currentColor, 0.13);
+  box-shadow: none;
+}
+
+window.nyx-clipboard .cb-glyph.image {
+  background: none;
+  box-shadow: none;
+}
+
 window.nyx-clipboard .cb-thumb {
-  border-radius: 7px;
+  border-radius: 6px;
 }
 
 window.nyx-clipboard .accent {
@@ -137,24 +227,20 @@ window.nyx-clipboard .accent {
 
 window.nyx-clipboard .cb-title {
   font-size: 13px;
-  font-weight: 500;
+}
+
+window.nyx-clipboard .mono {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+}
+
+window.nyx-clipboard .cb-title.mono {
+  font-size: 12px;
 }
 
 window.nyx-clipboard .cb-meta {
-  font-size: 11.5px;
-  color: @theme_dim_text;
+  font-size: 11px;
+  color: @theme_text_tertiary;
   font-feature-settings: "tnum";
-}
-
-window.nyx-clipboard .cb-code {
-  background: alpha(@theme_accent, 0.08);
-}
-
-window.nyx-clipboard .cb-code-text {
-  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
-  font-size: 16px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
 }
 
 window.nyx-clipboard .cb-secret .cb-title {
@@ -163,15 +249,17 @@ window.nyx-clipboard .cb-secret .cb-title {
 
 window.nyx-clipboard .cb-mark {
   color: @theme_accent;
-  -gtk-icon-size: 14px;
+}
+
+window.nyx-clipboard .cb-mark.star {
+  color: @theme_warning;
 }
 
 window.nyx-clipboard .cb-key {
-  font-size: 10.5px;
+  font-size: 10px;
+  font-weight: 500;
   color: @theme_text_tertiary;
-  padding: 1px 5px;
-  border-radius: 4px;
-  background: alpha(@theme_text, 0.05);
+  opacity: 0.8;
 }
 
 window.nyx-clipboard .cb-empty {
@@ -180,15 +268,209 @@ window.nyx-clipboard .cb-empty {
   padding: 48px 24px;
 }
 
-/* ---------- Pages ---------- */
+/* A verification code, on top of the list. */
+window.nyx-clipboard .cb-list row.cb-code-card {
+  padding: 10px 10px 10px 12px;
+  margin: 0 0 6px;
+  border-radius: 11px;
+  background: mix(@theme_popover, @theme_accent, 0.11);
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.30);
+  outline: none;
+}
+
+window.nyx-clipboard .cb-list row.cb-code-card:selected {
+  background: mix(@theme_popover, @theme_accent, 0.18);
+  box-shadow: inset 0 0 0 1px alpha(@theme_accent, 0.55);
+}
+
+window.nyx-clipboard .cb-code-text {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+}
+
+window.nyx-clipboard .cb-code-sub {
+  font-size: 11px;
+  color: @theme_dim_text;
+}
+
+window.nyx-clipboard .cb-ring {
+  color: @theme_accent;
+}
+
+window.nyx-clipboard .cb-left {
+  font-size: 11px;
+  color: @theme_dim_text;
+  font-feature-settings: "tnum";
+}
+
+window.nyx-clipboard button.cb-code-copy {
+  min-height: 30px;
+  padding: 0 10px;
+  background: alpha(@theme_popover, 0.6);
+  box-shadow: inset 0 0 0 1px @hairline;
+  font-weight: 500;
+}
+
+/* ---------- Preview ---------- */
+
+window.nyx-clipboard .cb-prev {
+  padding: 16px 18px 14px;
+}
+
+window.nyx-clipboard .cb-pm {
+  color: @theme_text_tertiary;
+  font-size: 12px;
+}
+
+window.nyx-clipboard .cb-pbody-box {
+  margin-top: 14px;
+}
+
+window.nyx-clipboard .cb-pbody {
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+window.nyx-clipboard .cb-pbody.mono {
+  font-size: 13px;
+}
+
+window.nyx-clipboard .cb-pcode {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 34px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+window.nyx-clipboard .cb-pnote {
+  color: @theme_dim_text;
+  font-size: 12.5px;
+}
+
+window.nyx-clipboard .cb-ppic {
+  margin-top: 14px;
+  border-radius: 11px;
+}
+
+window.nyx-clipboard .cb-file-path {
+  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+  font-size: 12.5px;
+}
+
+window.nyx-clipboard .cb-facts {
+  padding: 12px 0 14px;
+  font-size: 12px;
+}
+
+window.nyx-clipboard .cb-fact-key {
+  color: @theme_text_tertiary;
+}
+
+window.nyx-clipboard .cb-fact {
+  color: @theme_dim_text;
+  font-weight: 500;
+}
+
+window.nyx-clipboard .cb-pacts {
+  padding-top: 12px;
+  border-top: 1px solid @hairline;
+}
+
+window.nyx-clipboard .cb-pacts button {
+  min-height: 30px;
+  font-weight: 500;
+}
+
+window.nyx-clipboard .cb-pacts button.cb-pact-icon {
+  min-width: 30px;
+  padding: 0;
+}
+
+window.nyx-clipboard .cb-pacts button.cb-pact-icon.on {
+  color: @theme_accent;
+}
+
+window.nyx-clipboard .cb-enter {
+  font-weight: 600;
+}
+
+/* ---------- Actions, in place of the preview ---------- */
+
+window.nyx-clipboard .cb-actp {
+  padding-top: 12px;
+}
+
+window.nyx-clipboard .cb-afield entry {
+  min-height: 34px;
+  border-radius: 7px;
+}
+
+window.nyx-clipboard .cb-ah {
+  color: @theme_text_tertiary;
+  font-size: 11px;
+}
+
+window.nyx-clipboard .cb-agrid {
+  margin-top: 12px;
+}
+
+window.nyx-clipboard .cb-ag-head {
+  font-size: 11px;
+  font-weight: 600;
+  color: @theme_text_tertiary;
+  margin: 4px 8px 4px;
+}
+
+window.nyx-clipboard button.cb-ai {
+  min-height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  color: @theme_text;
+  font-size: 13px;
+  font-weight: 400;
+}
+
+window.nyx-clipboard button.cb-ai image {
+  color: @theme_dim_text;
+}
+
+window.nyx-clipboard button.cb-ai.danger,
+window.nyx-clipboard button.cb-ai.danger image {
+  color: @theme_danger;
+}
+
+window.nyx-clipboard button.cb-ai.dim {
+  opacity: 0.5;
+}
+
+window.nyx-clipboard button.cb-ai.hit {
+  font-weight: 500;
+}
+
+window.nyx-clipboard button.cb-ai.sel {
+  background: @nav_active;
+  opacity: 1;
+}
+
+window.nyx-clipboard button.cb-ai.sel image {
+  color: @theme_accent;
+}
+
+/* ---------- Pages in place of the preview ---------- */
 
 window.nyx-clipboard .cb-page {
-  padding: 2px 6px 8px;
+  padding: 16px 18px 14px;
 }
 
 window.nyx-clipboard .cb-page-title {
   font-size: 12px;
   color: @theme_dim_text;
+}
+
+window.nyx-clipboard .cb-editor-title {
+  font-weight: 600;
 }
 
 window.nyx-clipboard textview.cb-result {
@@ -208,10 +490,22 @@ window.nyx-clipboard .cb-page button {
   border-radius: 7px;
 }
 
+window.nyx-clipboard .cb-fills {
+  color: @theme_text_tertiary;
+  font-size: 11px;
+}
+
+window.nyx-clipboard .cb-fill {
+  color: @theme_accent;
+  background: alpha(@theme_accent, 0.12);
+}
+
 /* ---------- Foot ---------- */
 
 window.nyx-clipboard .cb-foot {
-  padding: 6px 8px 2px;
+  min-height: 38px;
+  padding: 0 8px 0 16px;
+  border-top: 1px solid @divider;
 }
 
 window.nyx-clipboard .cb-hint,
@@ -228,45 +522,9 @@ window.nyx-clipboard .cb-toast.danger {
   color: @theme_danger;
 }
 
-/* ---------- Menus and previews ---------- */
-
-popover.cb-popover > contents {
-  background: @theme_popover;
-  border: 1px solid @theme_border;
-  border-radius: 11px;
-  padding: 4px;
-}
-
-popover.cb-popover .cb-menu {
-  background: none;
-  min-width: 240px;
-}
-
-popover.cb-popover .cb-menu-row {
-  min-height: 30px;
+window.nyx-clipboard button.cb-set {
+  min-height: 28px;
   padding: 0 8px;
-  border-radius: 7px;
-}
-
-popover.cb-popover .cb-menu-row:hover,
-popover.cb-popover .cb-menu-row:selected,
-popover.cb-popover .cb-menu-row:focus {
-  background: alpha(@theme_accent, 0.18);
-}
-
-popover.cb-popover .cb-menu-row.danger {
-  color: @theme_danger;
-}
-
-popover.cb-popover .cb-menu-group {
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  color: @theme_text_tertiary;
-  padding: 8px 8px 2px;
-}
-
-tooltip .cb-preview {
-  font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
-  font-size: 12px;
+  font-size: 11.5px;
+  font-weight: 500;
 }

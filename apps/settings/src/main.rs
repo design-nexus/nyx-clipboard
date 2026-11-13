@@ -69,16 +69,43 @@ fn separator_id(s: &str) -> &'static str {
     }
 }
 
+/// 1284 → "1,284".
+fn count(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// What's stored, first on the page, with a way into the popup.
+fn stored() -> Value {
+    match Client::connect().and_then(|c| c.status()) {
+        Ok(st) => {
+            let items = if st.entries == 1 { "1 item".to_string() } else { format!("{} items", count(st.entries)) };
+            let snippets = if st.snippets == 1 { "1 snippet".to_string() } else { format!("{} snippets", count(st.snippets)) };
+            let watching = if !st.watching {
+                format!("not watching the clipboard{}", st.problem.as_deref().map(|p| format!(": {p}")).unwrap_or_default())
+            } else if st.private {
+                "private mode: nothing new is saved".to_string()
+            } else {
+                "watching the clipboard".to_string()
+            };
+            json!({"kind": "button", "key": "open", "title": format!("{items} · {} pinned · {snippets}", count(st.pinned)),
+                   "desc": format!("{} on this computer · {watching}", mb(st.bytes)), "label": "Open Clipboard",
+                   "keywords": "history stored items size"})
+        }
+        Err(_) => json!({"kind": "info", "key": "status", "title": "The clipboard service isn't running",
+                         "value": "systemctl --user start nyx-clipboardd"}),
+    }
+}
+
 fn describe() -> Value {
     let s = Settings::load();
-    let status = Client::connect().and_then(|c| c.status());
-    let state = match &status {
-        Ok(st) if !st.watching => {
-            format!("Not watching the clipboard{}", st.problem.as_deref().map(|p| format!(": {p}")).unwrap_or_default())
-        }
-        Ok(st) => format!("{} items, {} pinned, {} snippets · {}", st.entries, st.pinned, st.snippets, mb(st.bytes)),
-        Err(_) => "The clipboard service isn't running (systemctl --user start nyx-clipboardd)".to_string(),
-    };
     let mut banners = Vec::new();
     if s.private {
         banners.push(json!({"text": "Private mode is on: nothing new is saved.", "warning": false}));
@@ -102,37 +129,41 @@ fn describe() -> Value {
         })
         .collect();
     let mut groups = vec![
-        json!({"title": "Clipboard", "rows": [
-            {"kind": "info", "key": "status", "title": "History", "value": state},
-            {"kind": "switch", "key": "private", "title": "Private mode", "desc": "Stop saving what you copy until you turn this off. Also Ctrl + Shift + P in the popup.", "value": s.private, "refresh": true},
-            {"kind": "entry", "key": "shortcut", "title": "Shortcut", "desc": "Opens the popup. Written as Hyprland keys, like SUPER + CTRL + V.", "value": s.shortcut, "placeholder": "SUPER + CTRL + V"},
-            {"kind": "segmented", "key": "position", "title": "Open", "desc": "Where the popup appears.", "value": if s.position == Position::Cursor { "cursor" } else { "center" }, "options": [["center", "In the middle"], ["cursor", "At the pointer"]]},
-            {"kind": "choice", "key": "separator", "title": "Between items pasted together", "desc": "What goes between several marked items.", "value": separator_id(&s.separator), "options": separators},
+        json!({"title": "", "rows": [stored()]}),
+        json!({"title": "", "rows": [
+            {"kind": "switch", "key": "private", "title": "Private mode", "desc": "Stop saving what you copy until you turn it off. Also Ctrl Shift P in the pop-up.", "value": s.private, "refresh": true},
+        ]}),
+        json!({"title": "Opening", "rows": [
+            {"kind": "entry", "key": "shortcut", "title": "Shortcut", "desc": "Opens the pop-up; Super V still pastes as Omarchy does. Written as Hyprland keys, like SUPER + CTRL + V.", "value": s.shortcut, "placeholder": "SUPER + CTRL + V"},
+            {"kind": "segmented", "key": "position", "title": "Opens", "value": if s.position == Position::Cursor { "cursor" } else { "center" }, "options": [["center", "In the middle"], ["cursor", "At the pointer"]]},
+            {"kind": "choice", "key": "separator", "title": "Between items pasted together", "desc": "When you pick several with Ctrl Space.", "value": separator_id(&s.separator), "options": separators},
         ]}),
         json!({"title": "History", "rows": [
             {"kind": "choice", "key": "max_entries", "title": "Keep", "desc": "Older items go first. Pinned items always stay.", "value": s.max_entries.to_string(), "options": opts(entries)},
             {"kind": "choice", "key": "max_age_days", "title": "For", "desc": "Items you haven't used for this long are removed.", "value": s.max_age_days.to_string(), "options": opts(days)},
-            {"kind": "choice", "key": "max_item_mb", "title": "Largest item", "desc": "Bigger copies aren't saved.", "value": s.max_item_mb.to_string(), "options": opts(item)},
-            {"kind": "choice", "key": "max_total_mb", "title": "Space used", "desc": "The oldest items go when the history grows past this.", "value": s.max_total_mb.to_string(), "options": opts(total)},
-            {"kind": "switch", "key": "images", "title": "Save images", "desc": "Screenshots and copied pictures.", "value": s.images},
-            {"kind": "button", "key": "clear", "title": "Clear history", "desc": "Remove everything except pinned items.", "label": "Clear", "confirm": true, "destructive": true, "refresh": true},
-            {"kind": "button", "key": "clear_all", "title": "Clear everything", "desc": "Also remove pinned items.", "label": "Clear all", "confirm": true, "destructive": true, "refresh": true},
+            {"kind": "switch", "key": "images", "title": "Save images", "desc": format!("Screenshots and copied pictures, up to {} MB each.", s.max_item_mb), "value": s.images},
+            {"kind": "button", "key": "clear", "title": "Clear history", "desc": "Everything except pinned items.", "label": "Clear", "confirm": "Click again to clear", "destructive": true, "refresh": true},
+            {"kind": "disclosure", "key": "limits", "title": "Size limits, and clearing pinned items too", "rows": [
+                {"kind": "choice", "key": "max_item_mb", "title": "Largest item", "desc": "Bigger copies aren't saved.", "value": s.max_item_mb.to_string(), "options": opts(item), "refresh": true},
+                {"kind": "choice", "key": "max_total_mb", "title": "Space used", "desc": "The oldest items go when the history grows past this.", "value": s.max_total_mb.to_string(), "options": opts(total)},
+                {"kind": "button", "key": "clear_all", "title": "Clear everything", "desc": "Also remove pinned items.", "label": "Clear all", "confirm": "Click again to clear all", "destructive": true, "refresh": true},
+            ]},
         ]}),
         json!({"title": "Privacy", "rows": [
-            {"kind": "switch", "key": "skip_secrets", "title": "Don't save passwords and keys", "desc": "Copies that look like passwords, access tokens or private keys are kept in memory for two minutes and never saved. Password managers' copies are never saved either way.", "value": s.skip_secrets},
+            {"kind": "switch", "key": "skip_secrets", "title": "Don't save passwords and keys", "desc": "Kept in memory for two minutes, never written down. Password managers' copies are never saved either way.", "value": s.skip_secrets},
             {"kind": "entry", "key": "excluded_apps", "title": "Don't save copies from", "desc": "Window classes, separated by commas (hyprctl clients shows them).", "value": s.excluded_apps.join(", "), "placeholder": "1password, org.keepassxc.KeePassXC"},
         ]}),
-        json!({"title": "Verification codes", "note": "Codes in notifications (\u{201c}Your code is 483920\u{201d}) appear at the top of the popup while they're valid, and Passwords' browser extension can fill them in. They're kept only in memory, never saved, and never put on the clipboard unless you copy one.", "rows": [
+        json!({"title": "Verification codes", "collapsible": true, "open_by_default": false, "note": "Codes in notifications (\u{201c}Your code is 483920\u{201d}) appear at the top of the pop-up while they're valid, and Passwords' browser extension can fill them in. They're kept only in memory, never saved, and never put on the clipboard unless you copy one.", "rows": [
             {"kind": "switch", "key": "codes", "title": "Find codes in notifications", "value": s.codes},
             {"kind": "choice", "key": "code_seconds", "title": "Keep a code for", "value": s.code_seconds.to_string(), "options": opts(code_secs)},
             {"kind": "choice", "key": "code_clear_seconds", "title": "Clear a copied code", "desc": "Empty the clipboard this long after copying a code, if it still holds it.", "value": s.code_clear_seconds.to_string(), "options": opts(clear_secs)},
         ]}),
-        json!({"title": "Assistant", "rows": [
+        json!({"title": "Assistant", "collapsible": true, "open_by_default": false, "rows": [
             {"kind": "entry", "key": "translate_to", "title": "Translate into", "desc": "The language the Translate action uses. Assistant actions run on this computer, only when you pick one.", "value": s.translate_to},
         ]}),
     ];
     if !actions.is_empty() {
-        groups.push(json!({"title": "Actions from other apps", "note": "Actions added to the actions folder work only once you turn them on.", "rows": actions}));
+        groups.push(json!({"title": "Actions from other apps", "collapsible": true, "open_by_default": false, "note": "Actions added to the actions folder work only once you turn them on.", "rows": actions}));
     }
     json!({ "poll": 10, "banners": banners, "groups": groups })
 }
@@ -152,6 +183,10 @@ fn set(key: &str, value: &str) -> Result<Value, String> {
             let c = Client::connect().map_err(|e| e.to_string())?;
             c.set_private(on).map_err(|e| e.to_string())?;
             return Ok(json!({"refresh": true}));
+        }
+        "open" => {
+            std::process::Command::new("nyx-clipboard").arg("--show").spawn().map_err(|e| format!("can't open Clipboard: {e}"))?;
+            return Ok(Value::Null);
         }
         "clear" | "clear_all" => {
             let c = Client::connect().map_err(|e| e.to_string())?;

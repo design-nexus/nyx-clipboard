@@ -81,7 +81,7 @@ pub fn builtin(s: &Subject<'_>) -> Vec<Action> {
         a("favorite", "Add to favorites", "non-starred-symbolic", Group::Organize)
     });
     if s.kind.has_text() {
-        out.push(a("snippet", "Save as snippet", "insert-text-symbolic", Group::Organize));
+        out.push(a("snippet", "Save as a snippet", "insert-text-symbolic", Group::Organize));
     }
     let mut del = a("delete", "Delete", "user-trash-symbolic", Group::Organize);
     del.destructive = true;
@@ -105,7 +105,7 @@ pub fn builtin(s: &Subject<'_>) -> Vec<Action> {
         for (id, label) in text_actions {
             out.push(a(id, label, "font-size-symbolic", Group::Transform));
         }
-        out.push(a("trim", "Trim whitespace", "format-justify-left-symbolic", Group::Transform));
+        out.push(a("trim", "Trim spaces", "format-justify-left-symbolic", Group::Transform));
         out.push(a("join-lines", "Join lines", "format-justify-fill-symbolic", Group::Transform));
         if s.text.contains("http") && crate::transform::clean_urls_in(s.text) != s.text {
             out.push(a("clean-url", "Remove tracking from links", "web-browser-symbolic", Group::Transform));
@@ -138,7 +138,7 @@ pub fn builtin(s: &Subject<'_>) -> Vec<Action> {
         out.push(a("save-image", "Save image…", "document-save-symbolic", Group::Send));
     }
     if s.kind.has_text() && s.kind != Kind::Files {
-        out.push(a("save-file", "Save as file…", "document-save-symbolic", Group::Send));
+        out.push(a("save-file", "Save as a file…", "document-save-symbolic", Group::Send));
         out.push(a("note-new", "New note", "accessories-text-editor-symbolic", Group::Send));
         out.push(a("note-append", "Add to a note…", "accessories-text-editor-symbolic", Group::Send));
     }
@@ -149,7 +149,7 @@ pub fn builtin(s: &Subject<'_>) -> Vec<Action> {
             ("ai-summarize", "Summarize", "chat-bubble-text-symbolic"),
             ("ai-rewrite", "Rewrite", "document-edit-symbolic"),
             ("ai-translate", "Translate", "translations-symbolic"),
-            ("ai-extract", "Extract key details", "edit-find-symbolic"),
+            ("ai-extract", "Pull out the details", "edit-find-symbolic"),
         ];
         for (id, label, icon) in ai {
             let mut x = a(id, label, icon, Group::Assistant);
