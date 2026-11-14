@@ -5,6 +5,7 @@
 //! private mode and clear the history, nothing more.
 
 use nyx_clipboard_core::actions::Manifest;
+use nyx_clipboard_core::model::Status;
 use nyx_clipboard_core::paths;
 use nyx_clipboard_core::prefs::{Position, Settings};
 use nyx_clipboard_dbus::Client;
@@ -104,20 +105,24 @@ fn stored() -> Value {
     }
 }
 
-fn describe() -> Value {
-    let s = Settings::load();
-    let mut banners = Vec::new();
-    if s.private {
-        banners.push(json!({"text": "Private mode is on: nothing new is saved.", "warning": false}));
-    }
-    let entries = &[(100, "100"), (500, "500"), (1000, "1,000"), (5000, "5,000"), (20000, "20,000"), (0, "No limit")];
-    let days = &[(1, "1 day"), (7, "1 week"), (30, "30 days"), (90, "90 days"), (365, "1 year"), (0, "Until the item limit")];
-    let item = &[(1, "1 MB"), (5, "5 MB"), (10, "10 MB"), (50, "50 MB"), (100, "100 MB")];
-    let total = &[(128, "128 MB"), (512, "512 MB"), (1024, "1 GB"), (4096, "4 GB")];
-    let code_secs = &[(60, "1 minute"), (120, "2 minutes"), (180, "3 minutes"), (300, "5 minutes")];
-    let clear_secs = &[(10, "After 10 seconds"), (30, "After 30 seconds"), (60, "After 1 minute"), (120, "After 2 minutes")];
-    let separators = json!([["newline", "A new line"], ["blank", "A blank line"], ["space", "A space"], ["comma", "A comma"], ["tab", "A tab"]]);
-    let actions: Vec<Value> = manifests()
+const ENTRIES: &[(u32, &str)] = &[(100, "100"), (500, "500"), (1000, "1,000"), (5000, "5,000"), (20000, "20,000"), (0, "No limit")];
+const DAYS: &[(u32, &str)] = &[(1, "1 day"), (7, "1 week"), (30, "30 days"), (90, "90 days"), (365, "1 year"), (0, "Until the item limit")];
+const ITEM_MB: &[(u32, &str)] = &[(1, "1 MB"), (5, "5 MB"), (10, "10 MB"), (50, "50 MB"), (100, "100 MB")];
+const TOTAL_MB: &[(u32, &str)] = &[(128, "128 MB"), (512, "512 MB"), (1024, "1 GB"), (4096, "4 GB")];
+const CODE_SECS: &[(u32, &str)] = &[(60, "1 minute"), (120, "2 minutes"), (180, "3 minutes"), (300, "5 minutes")];
+const CLEAR_SECS: &[(u32, &str)] = &[(10, "After 10 seconds"), (30, "After 30 seconds"), (60, "After 1 minute"), (120, "After 2 minutes")];
+
+fn separators() -> Value {
+    json!([["newline", "A new line"], ["blank", "A blank line"], ["space", "A space"], ["comma", "A comma"], ["tab", "A tab"]])
+}
+
+fn banners(s: &Settings) -> Vec<Value> {
+    if s.private { vec![json!({"text": "Private mode is on: nothing new is saved.", "warning": false})] } else { Vec::new() }
+}
+
+/// One switch per installed action, on once approved.
+fn action_rows(s: &Settings) -> Vec<Value> {
+    manifests()
         .into_iter()
         .map(|m| {
             let what = match (&m.dbus, m.exec.first()) {
@@ -127,7 +132,37 @@ fn describe() -> Value {
             };
             json!({"kind": "switch", "key": format!("approve:{}", m.id), "title": m.label, "desc": what, "value": s.approved_actions.contains(&m.id)})
         })
-        .collect();
+        .collect()
+}
+
+/// Settings draws a preview pane beside the groups.
+fn preview_supported() -> bool {
+    std::env::var("SETTINGS_KINDS").is_ok_and(|k| k.split(' ').any(|x| x == "preview"))
+}
+
+/// `SUPER + CTRL + V` → "Super Ctrl V".
+fn keys(shortcut: &str) -> String {
+    shortcut
+        .split('+')
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .map(|k| {
+            let mut c = k.chars();
+            c.next().map(|f| f.to_uppercase().chain(c.flat_map(char::to_lowercase)).collect::<String>()).unwrap_or_default()
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn describe() -> Value {
+    let s = Settings::load();
+    if preview_supported() {
+        return describe_split(&s, Client::connect().and_then(|c| c.status()).ok());
+    }
+    let banners = banners(&s);
+    let (entries, days, item, total, code_secs, clear_secs) = (ENTRIES, DAYS, ITEM_MB, TOTAL_MB, CODE_SECS, CLEAR_SECS);
+    let separators = separators();
+    let actions = action_rows(&s);
     let mut groups = vec![
         json!({"title": "", "rows": [stored()]}),
         json!({"title": "", "rows": [
@@ -166,6 +201,102 @@ fn describe() -> Value {
         groups.push(json!({"title": "Actions from other apps", "collapsible": true, "open_by_default": false, "note": "Actions added to the actions folder work only once you turn them on.", "rows": actions}));
     }
     json!({ "poll": 10, "banners": banners, "groups": groups })
+}
+
+/// The page with the pop-up pictured beside it: the same settings, shorter, and the
+/// stored counts in the pane.
+fn describe_split(s: &Settings, status: Option<Status>) -> Value {
+    let actions: Vec<Value> = action_rows(s)
+        .into_iter()
+        .map(|mut r| {
+            r["icon"] = json!("application-x-addon-symbolic");
+            r
+        })
+        .collect();
+    let mut more = vec![
+        json!({"kind": "disclosure", "key": "privacy", "icon": "dialog-password-symbolic", "title": "Privacy", "desc": "Passwords, keys and apps not to save", "rows": [
+            {"kind": "switch", "key": "skip_secrets", "icon": "dialog-password-symbolic", "title": "Don't save passwords and keys", "desc": "Kept in memory for two minutes instead", "value": s.skip_secrets},
+            {"kind": "entry", "key": "excluded_apps", "icon": "action-unavailable-symbolic", "title": "Don't save copies from", "desc": "Window classes, separated by commas", "value": s.excluded_apps.join(", "), "placeholder": "1password, org.keepassxc.KeePassXC"},
+        ]}),
+        json!({"kind": "disclosure", "key": "codes", "icon": "security-high-symbolic", "title": "Verification codes", "desc": "Codes from notifications, at the top while valid", "rows": [
+            {"kind": "switch", "key": "codes", "icon": "preferences-system-notifications-symbolic", "title": "Find codes in notifications", "desc": "Kept only in memory, never saved", "value": s.codes},
+            {"kind": "choice", "key": "code_seconds", "icon": "preferences-system-time-symbolic", "title": "Keep a code for", "desc": "Then it leaves the pop-up", "value": s.code_seconds.to_string(), "options": opts(CODE_SECS)},
+            {"kind": "choice", "key": "code_clear_seconds", "icon": "edit-clear-symbolic", "title": "Clear a copied code", "desc": "If the clipboard still holds it", "value": s.code_clear_seconds.to_string(), "options": opts(CLEAR_SECS)},
+        ]}),
+        json!({"kind": "disclosure", "key": "assistant", "icon": "starred-symbolic", "title": "Assistant", "desc": if s.translate_to.is_empty() { "Actions that run on this computer".to_string() } else { format!("Translate into {}", s.translate_to) }, "rows": [
+            {"kind": "entry", "key": "translate_to", "icon": "preferences-desktop-locale-symbolic", "title": "Translate into", "desc": "The language the Translate action uses", "value": s.translate_to},
+        ]}),
+    ];
+    let mut note = "";
+    if !actions.is_empty() {
+        let on = actions.iter().filter(|r| r["value"] == true).count();
+        let n = if actions.len() == 1 { "1 action".to_string() } else { format!("{} actions", actions.len()) };
+        more.push(json!({"kind": "disclosure", "key": "actions", "icon": "application-x-addon-symbolic", "title": "Actions from other apps", "desc": format!("{n}, {on} on"), "rows": actions}));
+        note = "Actions from other apps work only once you turn them on.";
+    }
+    let groups = vec![
+        json!({"title": "", "rows": [
+            {"kind": "switch", "key": "private", "icon": "view-conceal-symbolic", "title": "Private mode", "desc": "Stops saving what you copy. Also Ctrl Shift P", "value": s.private, "refresh": true},
+        ]}),
+        json!({"title": "Opening", "rows": [
+            {"kind": "entry", "key": "shortcut", "icon": "input-keyboard-symbolic", "title": "Shortcut", "desc": "Super V still pastes as Omarchy does", "value": s.shortcut, "placeholder": "SUPER + CTRL + V"},
+            {"kind": "segmented", "key": "position", "icon": "focus-windows-symbolic", "title": "Opens", "desc": "Where the pop-up appears", "value": if s.position == Position::Cursor { "cursor" } else { "center" }, "options": [["center", "In the middle"], ["cursor", "At the pointer"]]},
+            {"kind": "choice", "key": "separator", "icon": "view-list-bullet-symbolic", "title": "Between items pasted together", "desc": "Several picked with Ctrl Space", "value": separator_id(&s.separator), "options": separators()},
+        ]}),
+        json!({"title": "History", "rows": [
+            {"kind": "choice", "key": "max_entries", "icon": "document-open-recent-symbolic", "title": "Keep", "desc": "Older items go first; pinned stay", "value": s.max_entries.to_string(), "options": opts(ENTRIES)},
+            {"kind": "choice", "key": "max_age_days", "icon": "preferences-system-time-symbolic", "title": "For", "desc": "Unused items are removed after", "value": s.max_age_days.to_string(), "options": opts(DAYS)},
+            {"kind": "switch", "key": "images", "icon": "image-x-generic-symbolic", "title": "Save images", "desc": format!("Up to {} MB each", s.max_item_mb), "value": s.images},
+            {"kind": "button", "key": "clear", "icon": "user-trash-symbolic", "title": "Clear history", "desc": "Everything except pinned items", "label": "Clear", "confirm": "Click again to clear", "destructive": true, "refresh": true},
+            {"kind": "disclosure", "key": "limits", "icon": "drive-harddisk-symbolic", "title": "Size limits", "desc": "And clearing pinned items too", "rows": [
+                {"kind": "choice", "key": "max_item_mb", "icon": "document-properties-symbolic", "title": "Largest item", "desc": "Bigger copies aren't saved", "value": s.max_item_mb.to_string(), "options": opts(ITEM_MB), "refresh": true},
+                {"kind": "choice", "key": "max_total_mb", "icon": "drive-harddisk-symbolic", "title": "Space used", "desc": "The oldest items go past this", "value": s.max_total_mb.to_string(), "options": opts(TOTAL_MB)},
+                {"kind": "button", "key": "clear_all", "icon": "edit-clear-all-symbolic", "title": "Clear everything", "desc": "Also remove pinned items", "label": "Clear all", "confirm": "Click again to clear all", "destructive": true, "refresh": true},
+            ]},
+        ]}),
+        json!({"title": "", "note": note, "rows": more}),
+    ];
+    json!({ "poll": 10, "banners": banners(s), "groups": groups, "preview": preview(s, status.as_ref()) })
+}
+
+fn escape(t: &str) -> String {
+    t.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// The pop-up as the daemon reports it. Settings may only ask for the status, never
+/// for the items themselves, so the pane shows counts rather than recent copies.
+fn preview(s: &Settings, status: Option<&Status>) -> Value {
+    let shortcut = keys(&s.shortcut);
+    let line = if shortcut.is_empty() {
+        "Newest first, search as you type.".to_string()
+    } else {
+        format!("What {shortcut} opens: newest first, search as you type.")
+    };
+    let mut blocks = Vec::new();
+    match status {
+        Some(st) => {
+            if !st.watching {
+                let why = st.problem.as_deref().map(|p| format!(": {}", escape(p))).unwrap_or_default();
+                blocks.push(json!({"kind": "banner", "text": format!("Not watching the clipboard{why}"), "warning": true}));
+            }
+            let items = if st.entries == 1 { "1 item".to_string() } else { format!("{} items", count(st.entries)) };
+            blocks.push(json!({"kind": "stats", "items": [
+                {"label": "History", "value": items, "sub": mb(st.bytes)},
+                {"label": "Pinned", "value": count(st.pinned), "sub": "Always kept"},
+                {"label": "Private mode", "value": if st.private { "On" } else { "Off" }, "sub": "Ctrl Shift P", "tone": if st.private { "warn" } else { "" }},
+            ]}));
+            blocks.push(json!({"kind": "rows", "rows": [
+                {"kind": "button", "key": "open", "icon": "edit-paste-symbolic", "title": "The pop-up", "desc": if shortcut.is_empty() { String::new() } else { format!("Or press {shortcut}") }, "label": "Open Clipboard"},
+            ]}));
+        }
+        None => blocks.push(json!({"kind": "banner", "text": "The clipboard service isn't running: <tt>systemctl --user start nyx-clipboardd</tt>", "warning": true})),
+    }
+    let foot = if s.skip_secrets {
+        "Passwords and keys are kept in memory for two minutes, never written down."
+    } else {
+        "Passwords and keys are saved like other copies; password managers' copies never are."
+    };
+    json!({"title": "The pop-up", "line": line, "blocks": blocks, "foot": foot, "foot_icon": "security-high-symbolic"})
 }
 
 fn reload() {
@@ -237,4 +368,65 @@ fn set(key: &str, value: &str) -> Result<Value, String> {
     s.save().map_err(|e| e.to_string())?;
     reload();
     Ok(Value::Null)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rows(v: &Value) -> Vec<&Value> {
+        fn walk<'a>(rows: &'a Value, out: &mut Vec<&'a Value>) {
+            for r in rows.as_array().into_iter().flatten() {
+                out.push(r);
+                walk(&r["rows"], out);
+            }
+        }
+        let mut out = Vec::new();
+        for g in v["groups"].as_array().unwrap() {
+            walk(&g["rows"], &mut out);
+        }
+        out
+    }
+
+    #[test]
+    fn shortcut_words() {
+        assert_eq!(keys("SUPER + CTRL + V"), "Super Ctrl V");
+        assert_eq!(keys("super+shift+F2"), "Super Shift F2");
+        assert_eq!(keys(""), "");
+    }
+
+    #[test]
+    fn split_page_has_icons_and_counts() {
+        let st = Status { entries: 1284, pinned: 3, bytes: 3 * 1_048_576, private: true, watching: true, ..Default::default() };
+        let page = describe_split(&Settings::default(), Some(st));
+        for r in rows(&page) {
+            assert!(r["icon"].as_str().is_some_and(|i| i.ends_with("-symbolic")), "{r}");
+        }
+        let p = &page["preview"];
+        assert_eq!(p["title"], "The pop-up");
+        let stats = &p["blocks"][0];
+        assert_eq!(stats["kind"], "stats");
+        assert_eq!(stats["items"][0]["value"], "1,284 items");
+        assert_eq!(stats["items"][0]["sub"], "3.0 MB");
+        assert_eq!(stats["items"][1]["value"], "3");
+        assert_eq!(stats["items"][2]["value"], "On");
+        assert!(p["blocks"].as_array().unwrap().iter().all(|b| b["kind"] != "list"));
+    }
+
+    #[test]
+    fn pane_without_the_service_or_watching() {
+        let p = preview(&Settings::default(), None);
+        assert_eq!(p["blocks"][0]["kind"], "banner");
+        let st = Status { watching: false, problem: Some("no <data-control>".into()), ..Default::default() };
+        let p = preview(&Settings::default(), Some(&st));
+        assert_eq!(p["blocks"][0]["text"], "Not watching the clipboard: no &lt;data-control&gt;");
+    }
+
+    #[test]
+    fn foot_follows_skip_secrets() {
+        let mut s = Settings { skip_secrets: true, ..Default::default() };
+        assert!(preview(&s, None)["foot"].as_str().unwrap().contains("two minutes"));
+        s.skip_secrets = false;
+        assert!(!preview(&s, None)["foot"].as_str().unwrap().contains("two minutes"));
+    }
 }
