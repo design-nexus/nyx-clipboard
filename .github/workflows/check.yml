@@ -42,8 +42,11 @@ jobs:
       - uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
         with:
           name: nyxos
+      # The runner's own D-Bus: its dbus-run-session has the session configuration.
+      - name: D-Bus
+        run: sudo apt-get install -y --no-install-recommends dbus
       - name: Integration tests on a private bus
         run: |
           nix develop "github:nyxos-project/nyx-packages#nyx-clipboard" \
             --override-input nyx-clipboard "path:$GITHUB_WORKSPACE" \
-            --command nix shell nixpkgs/nixos-26.05#dbus -c dbus-run-session -- tests/run.sh
+            --command /usr/bin/dbus-run-session -- tests/run.sh
