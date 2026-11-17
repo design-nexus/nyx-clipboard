@@ -1,6 +1,6 @@
 # Nyx Clipboard
 
-A fast floating clipboard for Omarchy and the Nyx suite: everything you copied,
+A fast floating clipboard for NyxOS, Omarchy and the Nyx suite: everything you copied,
 searchable as you type, with pins, snippets, actions that fit what you copied, and the
 verification codes from your notifications, kept safely for a few minutes.
 
@@ -33,6 +33,8 @@ search; ↑ ↓ to move; Enter pastes into the window you were in.
 - Follows the Nyx theme and Omarchy's, live.
 
 ## Install
+
+On NyxOS, install Clipboard from the Store or with `nyx install nyx-clipboard`. On Omarchy:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/design-nexus/nyx-clipboard/main/install.sh | bash
